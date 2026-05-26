@@ -25,6 +25,7 @@ from download_manager import DownloadManager, DownloadJob
 from logging_utils import LOG_FILE
 from gui.queue_panel import QueuePanel, QueueEntry
 from resource_utils import resource_path
+from version import __version__
 
 logger = logging.getLogger(__name__)
 def _fmt_duration(ms: int) -> str:
@@ -105,7 +106,7 @@ class MainWindow(QMainWindow):
         self._progress_signal.connect(self._on_progress)
         self._done_signal.connect(self._on_done)
 
-        self.setWindowTitle("Spotify VDJ")
+        self.setWindowTitle(f"Spotify VDJ v{__version__}")
         self.setWindowIcon(QIcon(resource_path("icon.ico")))
         self.setMinimumSize(1000, 650)
         self._build_menu()

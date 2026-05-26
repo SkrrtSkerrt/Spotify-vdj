@@ -42,6 +42,32 @@ class SpotifyClientRedirectUriTests(unittest.TestCase):
 
 
 class SpotifyClientPlaylistTests(unittest.TestCase):
+    def test_get_playlists_prefers_list_response_total(self):
+        sp = MagicMock()
+        sp.current_user_playlists.return_value = {
+            "items": [
+                {
+                    "id": "abc",
+                    "name": "My Playlist",
+                    "images": [{"url": "https://example.com/cover.jpg"}],
+                    "items": {"href": "https://api.spotify.com/v1/playlists/abc/items", "total": 17},
+                }
+            ],
+            "next": None,
+        }
+
+        playlists = spotify_client.get_playlists(sp)
+
+        self.assertEqual(playlists, [
+            {
+                "id": "abc",
+                "name": "My Playlist",
+                "total": 17,
+                "image": "https://example.com/cover.jpg",
+            }
+        ])
+        sp.playlist.assert_not_called()
+
     def test_get_playlists_uses_playlist_total_fallback(self):
         sp = MagicMock()
         sp.current_user_playlists.return_value = {

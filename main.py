@@ -11,6 +11,7 @@ from logging_utils import LOG_FILE, install_exception_hook, setup_logging
 from gui.setup_dialog import SetupDialog
 from gui.main_window import MainWindow
 from resource_utils import resource_path
+from version import __version__
 
 
 FFMPEG_DOWNLOAD_URL = "https://www.gyan.dev/ffmpeg/builds/"
@@ -58,7 +59,7 @@ def main():
     logging.getLogger("spotify_vdj").info("Starting Spotify VDJ (debug log: %s)", log_path)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Spotify VDJ")
+    app.setApplicationName(f"Spotify VDJ v{__version__}")
     app.setStyle("Fusion")
     app.setWindowIcon(QIcon(resource_path("icon.ico")))
 

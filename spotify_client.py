@@ -40,16 +40,27 @@ def create_client(client_id: str, client_secret: str, redirect_uri: str) -> spot
 
 
 def _playlist_total(sp: spotipy.Spotify, playlist_id: str, item: dict) -> int:
-    tracks = item.get("tracks") or {}
-    total = tracks.get("total")
-    if isinstance(total, int) and total > 0:
-        return total
+    candidates = []
+
+    for key in ("tracks", "items"):
+        container = item.get(key) or {}
+        total = container.get("total")
+        if isinstance(total, int):
+            candidates.append(total)
+            if total > 0:
+                return total
 
     try:
         full = sp.playlist(playlist_id, fields="tracks.total")
-        return full.get("tracks", {}).get("total", total or 0)
+        total = (full.get("tracks") or {}).get("total")
+        if isinstance(total, int):
+            candidates.append(total)
+            if total > 0:
+                return total
     except Exception:
-        return total or 0
+        pass
+
+    return next((total for total in candidates if isinstance(total, int)), 0)
 
 
 def _playlist_list_error(error: Exception) -> RuntimeError:
