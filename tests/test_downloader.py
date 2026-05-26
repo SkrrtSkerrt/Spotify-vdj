@@ -39,6 +39,95 @@ class DownloaderTests(unittest.TestCase):
             "https://www.youtube.com/watch?v=bad",
         ])
 
+    def test_search_queries_include_fallbacks(self):
+        track = {"id": "trk1", "artist": "Artist", "name": "Song", "duration_ms": 180000}
+
+        queries = downloader._search_queries(track)
+
+        self.assertEqual(queries, [
+            "Artist - Song official audio",
+            "Artist - Song",
+            "Artist Song official audio",
+        ])
+
+    def test_find_existing_download_path_matches_variant_filename(self):
+        track = {"id": "trk1", "artist": "Artist", "name": "Song", "duration_ms": 180000}
+        with tempfile.TemporaryDirectory() as outdir:
+            expected = os.path.join(outdir, "Artist - Song (Official Audio).mp3")
+            with open(expected, "wb") as f:
+                f.write(b"x")
+
+            found = downloader.find_existing_download_path(track, outdir)
+
+            self.assertEqual(found, expected)
+            self.assertTrue(downloader.already_downloaded(track, outdir))
+
+    def test_format_download_error_is_more_helpful(self):
+        track = {"id": "trk1", "artist": "Artist", "name": "Song", "duration_ms": 180000}
+        msg = downloader.format_download_error(RuntimeError("Postprocessing audio conversion failed"), track)
+
+        self.assertIn("FFmpeg", msg)
+        self.assertIn("Artist - Song", msg)
+        self.assertIn("conversion", msg.lower())
+
+    def test_download_track_falls_back_to_second_query_after_unavailable_candidate(self):
+        track = {"id": "trk1", "artist": "Artist", "name": "Song", "duration_ms": 180000}
+        done = []
+
+        search1_ydl = MagicMock()
+        search1_ydl.extract_info.return_value = {
+            "entries": [
+                {
+                    "webpage_url": "https://www.youtube.com/watch?v=bad1",
+                    "duration": 180,
+                    "availability": "public",
+                }
+            ]
+        }
+        search1_ctx = MagicMock()
+        search1_ctx.__enter__.return_value = search1_ydl
+        search1_ctx.__exit__.return_value = False
+
+        download1_ydl = MagicMock()
+        download1_ydl.download.side_effect = RuntimeError("This video is not available")
+        download1_ctx = MagicMock()
+        download1_ctx.__enter__.return_value = download1_ydl
+        download1_ctx.__exit__.return_value = False
+
+        search2_ydl = MagicMock()
+        search2_ydl.extract_info.return_value = {
+            "entries": [
+                {
+                    "webpage_url": "https://www.youtube.com/watch?v=good",
+                    "duration": 181,
+                    "availability": "public",
+                }
+            ]
+        }
+        search2_ctx = MagicMock()
+        search2_ctx.__enter__.return_value = search2_ydl
+        search2_ctx.__exit__.return_value = False
+
+        download2_ydl = MagicMock()
+        download2_ctx = MagicMock()
+        download2_ctx.__enter__.return_value = download2_ydl
+        download2_ctx.__exit__.return_value = False
+
+        with tempfile.TemporaryDirectory() as outdir, \
+                patch("downloader.ensure_ffmpeg_available", return_value="/ffmpeg"), \
+                patch("downloader.threading.Thread", ImmediateThread), \
+                patch("downloader.yt_dlp.YoutubeDL", side_effect=[search1_ctx, download1_ctx, search2_ctx, download2_ctx]):
+            downloader.download_track(
+                track,
+                outdir,
+                on_progress=lambda status, pct: None,
+                on_done=lambda *args: done.append(args),
+            )
+
+        self.assertEqual(download1_ydl.download.call_count, 1)
+        download2_ydl.download.assert_called_once_with(["https://www.youtube.com/watch?v=good"])
+        self.assertEqual(done, [("trk1", True, os.path.join(outdir, "Artist - Song.mp3"))])
+
     def test_download_track_uses_single_selected_candidate(self):
         track = {"id": "trk1", "artist": "Artist", "name": "Song", "duration_ms": 180000}
         done = []

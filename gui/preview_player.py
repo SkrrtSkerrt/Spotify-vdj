@@ -8,6 +8,7 @@ from PyQt5.QtCore import Qt, QUrl, QTimer
 from PyQt5.QtGui import QFont
 
 import downloader
+import preview_cache
 
 
 class PreviewPlayer(QWidget):
@@ -16,6 +17,7 @@ class PreviewPlayer(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._current_track: dict | None = None
+        self._preview_path: str | None = None
         self._player = QMediaPlayer()
         self._player.stateChanged.connect(self._on_state_changed)
         self._player.positionChanged.connect(self._on_position_changed)
@@ -82,12 +84,22 @@ class PreviewPlayer(QWidget):
         preview_url = track.get("preview_url")
         if preview_url:
             self._label.setText(f"Preview: {track['artist']} — {track['name']}  (30s clip)")
-            content = QMediaContent(QUrl(preview_url))
-            self._player.setMedia(content)
-            self._play_btn.setEnabled(True)
-            self._stop_btn.setEnabled(True)
-            self._play_btn.setText("▶ Play")
+            try:
+                self._preview_path = preview_cache.download_preview_clip(preview_url, track["id"])
+                content = QMediaContent(QUrl.fromLocalFile(self._preview_path))
+                self._player.setMedia(content)
+                self._play_btn.setEnabled(True)
+                self._stop_btn.setEnabled(True)
+                self._play_btn.setText("▶ Play")
+                self._no_preview_label.setText("Preview cached locally for more reliable playback")
+            except Exception as e:
+                self._preview_path = None
+                self._label.setText(f"{track['artist']} — {track['name']}")
+                self._play_btn.setEnabled(False)
+                self._stop_btn.setEnabled(False)
+                self._no_preview_label.setText(f"Preview failed to load: {e}")
         else:
+            self._preview_path = None
             self._label.setText(f"{track['artist']} — {track['name']}")
             self._play_btn.setEnabled(False)
             self._stop_btn.setEnabled(False)
@@ -138,7 +150,8 @@ class PreviewPlayer(QWidget):
 
     def _on_error(self, error):
         if error != QMediaPlayer.NoError:
-            self._label.setText(f"Playback error — use 'Find on YouTube' instead")
+            self._label.setText("Preview playback error — use 'Find on YouTube' instead")
+            self._no_preview_label.setText("The local preview clip could not be played by the system media backend.")
             self._play_btn.setEnabled(False)
 
     def _open_youtube(self):

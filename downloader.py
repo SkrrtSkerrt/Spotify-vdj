@@ -1,18 +1,31 @@
 import os
 import re
 import shutil
-import threading
 import sys
+import tempfile
+import threading
 from typing import Callable
+
 import yt_dlp
+
+AUDIO_EXTENSIONS = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus", ".m4b"}
 
 
 def _sanitize(name: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "_", name)
 
 
-def _search_query(track: dict) -> str:
-    return f"{track['artist']} - {track['name']} official audio"
+def _normalize_text(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _track_signature(track: dict) -> tuple[set[str], set[str]]:
+    return _normalize_text(track["artist"]), _normalize_text(track["name"])
+
+
+def _file_signature(path: str) -> set[str]:
+    stem = os.path.splitext(os.path.basename(path))[0]
+    return _normalize_text(stem)
 
 
 def _expected_filename(track: dict, output_folder: str) -> str:
@@ -21,11 +34,60 @@ def _expected_filename(track: dict, output_folder: str) -> str:
     return os.path.join(output_folder, f"{safe_artist} - {safe_name}.mp3")
 
 
-def already_downloaded(track: dict, output_folder: str) -> bool:
-    return os.path.exists(_expected_filename(track, output_folder))
+def build_download_index(output_folder: str) -> list[str]:
+    if not output_folder or not os.path.isdir(output_folder):
+        return []
+
+    paths: list[str] = []
+    for root, _, files in os.walk(output_folder):
+        for filename in files:
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in AUDIO_EXTENSIONS:
+                continue
+            paths.append(os.path.join(root, filename))
+    return paths
 
 
-def youtube_search_url(track: dict) -> str:
+def find_existing_download_path(
+    track: dict,
+    output_folder: str,
+    known_paths: list[str] | None = None,
+) -> str | None:
+    expected = _expected_filename(track, output_folder)
+    if os.path.exists(expected):
+        return expected
+
+    paths = known_paths if known_paths is not None else build_download_index(output_folder)
+    if not paths:
+        return None
+
+    artist_tokens, name_tokens = _track_signature(track)
+    for path in paths:
+        tokens = _file_signature(path)
+        if artist_tokens and name_tokens and artist_tokens.issubset(tokens) and name_tokens.issubset(tokens):
+            return path
+    return None
+
+
+def already_downloaded(track: dict, output_folder: str, known_paths: list[str] | None = None) -> bool:
+    return find_existing_download_path(track, output_folder, known_paths) is not None
+
+
+def _search_queries(track: dict) -> list[str]:
+    artist = track["artist"].strip()
+    name = track["name"].strip()
+    return [
+        f"{artist} - {name} official audio",
+        f"{artist} - {name}",
+        f"{artist} {name} official audio",
+    ]
+
+
+def _search_query(track: dict) -> str:
+    return _search_queries(track)[0]
+
+
+def youtube_search_url(track: dict):
     import urllib.parse
     q = urllib.parse.quote_plus(_search_query(track))
     return f"https://www.youtube.com/results?search_query={q}"
@@ -48,6 +110,50 @@ def find_ffmpeg_location() -> str | None:
             return base
 
     return None
+
+
+def _is_retryable_source_error(message: str) -> bool:
+    lowered = message.lower()
+    return any(
+        needle in lowered
+        for needle in (
+            "this video is not available",
+            "video is unavailable",
+            "private video",
+            "members-only",
+            "sign in to confirm",
+            "unable to extract",
+            "no video formats found",
+            "postprocessing audio conversion failed",
+        )
+    )
+
+
+def format_download_error(error: Exception | str, track: dict, source_url: str | None = None) -> str:
+    title = f"{track['artist']} - {track['name']}"
+    details = str(error).strip() or error.__class__.__name__
+    lowered = details.lower()
+    lines = [f"{title}: download failed."]
+
+    if "winerror 32" in lowered or "winerror 5" in lowered or "access denied" in lowered:
+        lines[0] = f"{title}: Windows could not write the file because it is locked or access was denied."
+        lines.append("Close anything using the output file, confirm the folder is writable, then retry.")
+    elif "postprocessing audio conversion failed" in lowered or "ffmpeg" in lowered:
+        lines[0] = f"{title}: FFmpeg failed while converting the download to MP3."
+        lines.append("Check that FFmpeg is installed and that the output file is not open in another app.")
+    elif "this video is not available" in lowered or "video is unavailable" in lowered or "private video" in lowered:
+        lines[0] = f"{title}: YouTube returned an unavailable result while searching for a match."
+        lines.append("The app will try other search results, but you may need a different version of the track.")
+    elif "no video formats found" in lowered or "unable to extract" in lowered:
+        lines[0] = f"{title}: YouTube did not expose a usable audio stream for this candidate."
+        lines.append("The app will try another search result or a different query.")
+    else:
+        lines.append("Try a different result or search manually if this keeps happening.")
+
+    if source_url:
+        lines.append(f"Source: {source_url}")
+    lines.append(f"Details: {details}")
+    return "\n".join(lines)
 
 
 def ensure_ffmpeg_available() -> str:
@@ -73,13 +179,16 @@ class DownloadHandle:
         return self._cancel.is_set()
 
 
-def _search_candidates(track: dict, limit: int = 10) -> list[dict]:
-    query = _search_query(track)
+def _search_candidates_for_query(query: str, limit: int = 10) -> list[dict]:
     search_url = f"ytsearch{limit}:{query}"
     with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
         info = ydl.extract_info(search_url, download=False)
     entries = info.get("entries") or []
     return [e for e in entries if e and e.get("webpage_url")]
+
+
+def _search_candidates(track: dict, limit: int = 10) -> list[dict]:
+    return _search_candidates_for_query(_search_query(track), limit)
 
 
 def _candidate_sort_key(entry: dict, desired_duration: int) -> tuple[int, int, int]:
@@ -163,47 +272,45 @@ def download_track(
         }
 
         try:
-            candidates = _candidate_urls(track, _search_candidates(track))
-            if not candidates:
-                raise RuntimeError(f"No YouTube matches found for {track['artist']} - {track['name']}")
-
             last_error: Exception | None = None
-            for url in candidates:
-                try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url])
-                    out_path = _expected_filename(track, output_folder)
-                    if on_done:
-                        on_done(track["id"], True, out_path)
-                    return
-                except yt_dlp.utils.DownloadCancelled:
-                    if on_done:
-                        on_done(track["id"], False, "Cancelled")
-                    return
-                except Exception as e:
-                    msg = str(e).lower()
-                    last_error = e
-                    if any(
-                        needle in msg
-                        for needle in (
-                            "this video is not available",
-                            "video is unavailable",
-                            "private video",
-                            "members-only",
-                            "sign in to confirm",
-                        )
-                    ):
-                        continue
-                    raise
+            last_url: str | None = None
+            for query in _search_queries(track):
+                candidates = _candidate_urls(track, _search_candidates_for_query(query))
+                if not candidates:
+                    continue
+
+                for url in candidates:
+                    last_url = url
+                    try:
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            ydl.download([url])
+                        out_path = _expected_filename(track, output_folder)
+                        if on_done:
+                            on_done(track["id"], True, out_path)
+                        return
+                    except yt_dlp.utils.DownloadCancelled:
+                        if on_done:
+                            on_done(track["id"], False, "Cancelled")
+                        return
+                    except Exception as e:
+                        msg = str(e)
+                        last_error = e
+                        if _is_retryable_source_error(msg):
+                            continue
+                        if on_done:
+                            on_done(track["id"], False, format_download_error(e, track, source_url=url))
+                        return
 
             if on_done:
-                on_done(track["id"], False, str(last_error or RuntimeError("No playable YouTube candidate found.")))
+                if last_error is None:
+                    last_error = RuntimeError(f"No YouTube matches found for {track['artist']} - {track['name']}")
+                on_done(track["id"], False, format_download_error(last_error, track, source_url=last_url))
         except yt_dlp.utils.DownloadCancelled:
             if on_done:
                 on_done(track["id"], False, "Cancelled")
         except Exception as e:
             if on_done:
-                on_done(track["id"], False, str(e))
+                on_done(track["id"], False, format_download_error(e, track))
         finally:
             _cleanup_temp_dir(temp_dir)
 

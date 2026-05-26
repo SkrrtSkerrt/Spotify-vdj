@@ -51,5 +51,23 @@ class DownloadManagerCancelTests(unittest.TestCase):
         self.assertEqual(manager.pending_ids(), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_set_max_concurrent_releases_pending_jobs(self):
+        started = []
+
+        def make_job(track_id):
+            return DownloadJob(
+                track={"id": track_id, "name": "Song", "artist": "Artist", "duration_ms": 180000},
+                output_folder="/tmp",
+                on_progress=lambda status, pct: None,
+                on_done=lambda *args: started.append(args),
+            )
+
+        manager = DownloadManager(max_concurrent=0)
+        manager.enqueue(make_job("track-1"))
+        manager.enqueue(make_job("track-2"))
+        self.assertEqual(manager.pending_ids(), ["track-1", "track-2"])
+
+        manager.set_max_concurrent(1)
+
+        self.assertEqual(manager.pending_ids(), ["track-2"])
+

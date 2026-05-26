@@ -80,7 +80,9 @@ class QueueRow(QFrame):
         self._next_badge.setVisible(is_next)
 
     def _apply_status(self, status: str, progress: float):
-        self._subtitle.setText(status)
+        display = status.splitlines()[0]
+        self._subtitle.setText(display)
+        self.setToolTip(status)
         self._bar.setValue(int(progress))
 
         queued = status == "Queued"

@@ -10,6 +10,7 @@ DEFAULTS = {
     "output_folder": os.path.join(os.path.expanduser("~"), "Music", "SpotifyVDJ"),
     "audio_format": "mp3",
     "audio_quality": "320",
+    "max_concurrent_downloads": 2,
 }
 
 

@@ -26,6 +26,11 @@ class DownloadManager:
         self._active: dict[str, DownloadJob] = {}
         self._lock = threading.Lock()
 
+    def set_max_concurrent(self, max_concurrent: int) -> None:
+        with self._lock:
+            self._max = max(0, int(max_concurrent))
+        self._maybe_start_next()
+
     def enqueue(self, job: DownloadJob) -> None:
         with self._lock:
             self._pending.append(job)

@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QFileDialog, QMessageBox, QGroupBox, QApplication
+    QPushButton, QFileDialog, QMessageBox, QGroupBox, QApplication, QSpinBox
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QIcon
@@ -96,6 +96,22 @@ class SetupDialog(QDialog):
         folder_note.setStyleSheet("color: #555; font-size: 8pt;")
         layout.addWidget(folder_note)
 
+        # Queue size
+        queue_group = QGroupBox("Step 4 — Set download queue size")
+        queue_layout = QHBoxLayout(queue_group)
+        queue_layout.addWidget(QLabel("Max concurrent downloads:"))
+        self.max_concurrent_input = QSpinBox()
+        self.max_concurrent_input.setRange(1, 8)
+        self.max_concurrent_input.setValue(int(self.cfg.get("max_concurrent_downloads", 2)))
+        queue_layout.addWidget(self.max_concurrent_input)
+        queue_layout.addStretch()
+        layout.addWidget(queue_group)
+
+        queue_note = QLabel("Higher values start more downloads at once. Lower values are steadier on slower machines.")
+        queue_note.setWordWrap(True)
+        queue_note.setStyleSheet("color: #555; font-size: 8pt;")
+        layout.addWidget(queue_note)
+
         # Buttons
         btn_layout = QHBoxLayout()
         cancel_btn = QPushButton("Cancel")
@@ -140,6 +156,7 @@ class SetupDialog(QDialog):
         self.cfg["client_secret"] = client_secret
         self.cfg["output_folder"] = folder
         self.cfg["redirect_uri"] = redirect_uri
+        self.cfg["max_concurrent_downloads"] = int(self.max_concurrent_input.value())
         config.save(self.cfg)
         self.accept()
 

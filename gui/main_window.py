@@ -64,7 +64,8 @@ class MainWindow(QMainWindow):
         self.playlists: list[dict] = []
         self.tracks: list[dict] = []
         self.track_states: dict[str, str] = {}
-        self._dl_manager = DownloadManager(max_concurrent=2)
+        self._dl_manager = DownloadManager(max_concurrent=int(cfg.get("max_concurrent_downloads", 2)))
+        self._downloaded_paths: list[str] = downloader.build_download_index(cfg.get("output_folder", ""))
 
         self._progress_signal.connect(self._on_progress)
         self._done_signal.connect(self._on_done)
@@ -264,7 +265,7 @@ class MainWindow(QMainWindow):
         output_folder = self.cfg.get("output_folder", "")
 
         for i, track in enumerate(tracks):
-            exists = downloader.already_downloaded(track, output_folder)
+            exists = downloader.already_downloaded(track, output_folder, self._downloaded_paths)
             state = TrackState.EXISTS if exists else TrackState.PENDING
             self.track_states[track["id"]] = state
 
@@ -276,6 +277,9 @@ class MainWindow(QMainWindow):
             status_item = QTableWidgetItem("Downloaded" if exists else "")
             if exists:
                 status_item.setForeground(QBrush(QColor("#2e7d32")))
+                existing_path = downloader.find_existing_download_path(track, output_folder, self._downloaded_paths)
+                if existing_path:
+                    status_item.setToolTip(f"Already in folder: {existing_path}")
             self.track_table.setItem(i, 4, status_item)
 
             # Preview button — greyed out if Spotify has no clip
@@ -323,6 +327,12 @@ class MainWindow(QMainWindow):
         for track in tracks:
             state = self.track_states.get(track["id"])
             if state in (TrackState.DOWNLOADING, TrackState.DONE, TrackState.EXISTS):
+                continue
+
+            existing_path = downloader.find_existing_download_path(track, output_folder, self._downloaded_paths)
+            if existing_path:
+                self.track_states[track["id"]] = TrackState.EXISTS
+                self._set_track_status(track["id"], "Downloaded", "#2e7d32", tooltip=f"Already in folder: {existing_path}")
                 continue
 
             self.track_states[track["id"]] = TrackState.DOWNLOADING
@@ -375,25 +385,29 @@ class MainWindow(QMainWindow):
             self.track_states[track_id] = TrackState.DONE
             self._set_track_status(track_id, "Downloaded", "#2e7d32")
             self.queue_panel.update_progress(track_id, "Downloaded", 100)
+            if path_or_error and path_or_error not in self._downloaded_paths:
+                self._downloaded_paths.append(path_or_error)
         elif path_or_error == "Cancelled":
             self.track_states[track_id] = TrackState.CANCELLED
             self._set_track_status(track_id, "Cancelled", "#888")
             self.queue_panel.update_progress(track_id, "Cancelled", 0)
         else:
             self.track_states[track_id] = TrackState.ERROR
-            self._set_track_status(track_id, f"Error", "#c62828")
-            self.queue_panel.update_progress(track_id, f"Error: {path_or_error[:50]}", 0)
+            self._set_track_status(track_id, f"Error", "#c62828", tooltip=path_or_error)
+            self.queue_panel.update_progress(track_id, f"Error: {path_or_error.splitlines()[0][:120]}", 0)
 
         active = sum(1 for s in self.track_states.values() if s == TrackState.DOWNLOADING)
         done = sum(1 for s in self.track_states.values() if s in (TrackState.DONE, TrackState.EXISTS))
         if active == 0:
             self.status_bar.showMessage(f"{done}/{len(self.tracks)} tracks available in VDJ folder")
 
-    def _set_track_status(self, track_id: str, text: str, color: str = "#000000"):
+    def _set_track_status(self, track_id: str, text: str, color: str = "#000000", tooltip: str | None = None):
         for i, track in enumerate(self.tracks):
             if track["id"] == track_id:
                 item = QTableWidgetItem(text)
                 item.setForeground(QBrush(QColor(color)))
+                if tooltip:
+                    item.setToolTip(tooltip)
                 self.track_table.setItem(i, 4, item)
                 return
 
@@ -410,6 +424,8 @@ class MainWindow(QMainWindow):
                     self.cfg["client_secret"],
                     self.cfg["redirect_uri"],
                 )
+                self._dl_manager.set_max_concurrent(int(self.cfg.get("max_concurrent_downloads", 2)))
+                self._downloaded_paths = downloader.build_download_index(self.cfg.get("output_folder", ""))
                 self._load_playlists()
             except Exception as e:
                 QMessageBox.critical(self, "Auth Error", str(e))
