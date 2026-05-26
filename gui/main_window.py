@@ -1,10 +1,14 @@
 import csv
+import json
+import logging
 import os
+import platform
 import subprocess
 import sys
 import webbrowser
+import zipfile
 from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
+    QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QListWidget, QListWidgetItem, QTableWidget, QTableWidgetItem,
     QPushButton, QLabel, QHeaderView, QSplitter,
     QStatusBar, QAction, QAbstractItemView, QMessageBox,
@@ -18,10 +22,11 @@ import config
 import spotify_client as sc
 import downloader
 from download_manager import DownloadManager, DownloadJob
+from logging_utils import LOG_FILE
 from gui.queue_panel import QueuePanel, QueueEntry
 from resource_utils import resource_path
 
-
+logger = logging.getLogger(__name__)
 def _fmt_duration(ms: int) -> str:
     s = ms // 1000
     return f"{s // 60}:{s % 60:02d}"
@@ -93,6 +98,8 @@ class MainWindow(QMainWindow):
         self._configure_folder_watch_timer()
         self._playlist_loader_thread = None
         self._playlist_loader = None
+        self._active_threads = set()
+        self._track_load_token = 0
 
         self._progress_signal.connect(self._on_progress)
         self._done_signal.connect(self._on_done)
@@ -122,6 +129,18 @@ class MainWindow(QMainWindow):
         rescan_action = QAction("Rescan Library", self)
         rescan_action.triggered.connect(self._rescan_output_folder)
         file_menu.addAction(rescan_action)
+
+        open_log_action = QAction("Open Debug Log", self)
+        open_log_action.triggered.connect(self._open_debug_log)
+        file_menu.addAction(open_log_action)
+
+        copy_log_path_action = QAction("Copy Debug Log Path", self)
+        copy_log_path_action.triggered.connect(self._copy_debug_log_path)
+        file_menu.addAction(copy_log_path_action)
+
+        export_debug_bundle_action = QAction("Export Debug Bundle…", self)
+        export_debug_bundle_action.triggered.connect(self._export_debug_bundle)
+        file_menu.addAction(export_debug_bundle_action)
 
         export_failed_action = QAction("Export Failed Tracks…", self)
         export_failed_action.triggered.connect(self._export_failed_tracks)
@@ -266,6 +285,11 @@ class MainWindow(QMainWindow):
     def _toggle_queue_dock(self, checked: bool):
         self._queue_dock.setVisible(checked)
 
+    def _retain_thread(self, thread: QThread):
+        self._active_threads.add(thread)
+        thread.finished.connect(lambda t=thread: self._active_threads.discard(t))
+        thread.finished.connect(thread.deleteLater)
+
     # ── Playlists ─────────────────────────────────────────────────────────────
 
     def _load_playlists(self):
@@ -284,7 +308,7 @@ class MainWindow(QMainWindow):
         self.export_failed_btn.setEnabled(False)
         self.status_bar.showMessage("Loading playlists…")
 
-        self._playlist_loader_thread = QThread()
+        self._playlist_loader_thread = QThread(self)
         self._playlist_loader = PlaylistsLoader(self.sp)
         self._playlist_loader.moveToThread(self._playlist_loader_thread)
         self._playlist_loader_thread.started.connect(self._playlist_loader.run)
@@ -292,6 +316,7 @@ class MainWindow(QMainWindow):
         self._playlist_loader.error.connect(self._on_playlists_load_error)
         self._playlist_loader.finished.connect(self._playlist_loader_thread.quit)
         self._playlist_loader.error.connect(self._playlist_loader_thread.quit)
+        self._retain_thread(self._playlist_loader_thread)
         self._playlist_loader_thread.start()
 
     def _on_playlists_loaded(self, playlists: list[dict]):
@@ -313,6 +338,7 @@ class MainWindow(QMainWindow):
             self.playlist_list.setCurrentRow(0)
 
     def _on_playlists_load_error(self, error: str):
+        logger.error("Playlist list load failed: %s", error)
         self.playlists = []
         self.playlist_list.setEnabled(True)
         self.playlist_list.clear()
@@ -337,6 +363,7 @@ class MainWindow(QMainWindow):
         playlist_id = item.data(Qt.UserRole)
         if not playlist_id:
             return
+        logger.info("Loading playlist tracks: %s (%s)", item.text(), playlist_id)
         self.playlist_title.setText(item.text())
         self.track_table.setRowCount(0)
         self.tracks = []
@@ -348,17 +375,22 @@ class MainWindow(QMainWindow):
         self._refresh_action_buttons()
         self.status_bar.showMessage("Loading tracks…")
 
-        self._loader_thread = QThread()
+        self._track_load_token += 1
+        token = self._track_load_token
+        self._loader_thread = QThread(self)
         self._loader = PlaylistLoader(self.sp, playlist_id)
         self._loader.moveToThread(self._loader_thread)
         self._loader_thread.started.connect(self._loader.run)
-        self._loader.finished.connect(self._on_tracks_loaded)
-        self._loader.error.connect(self._on_tracks_load_error)
+        self._loader.finished.connect(lambda tracks, t=token: self._on_tracks_loaded(t, tracks))
+        self._loader.error.connect(lambda error, t=token: self._on_tracks_load_error(t, error))
         self._loader.finished.connect(self._loader_thread.quit)
         self._loader.error.connect(self._loader_thread.quit)
+        self._retain_thread(self._loader_thread)
         self._loader_thread.start()
 
-    def _on_tracks_loaded(self, tracks: list[dict]):
+    def _on_tracks_loaded(self, token: int, tracks: list[dict]):
+        if token != self._track_load_token:
+            return
         self.tracks = tracks
         self.track_table.setRowCount(len(tracks))
         output_folder = self.cfg.get("output_folder", "")
@@ -400,7 +432,10 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"{len(tracks)} tracks  ·  {pending} not yet downloaded")
         self._refresh_action_buttons()
 
-    def _on_tracks_load_error(self, error: str):
+    def _on_tracks_load_error(self, token: int, error: str):
+        if token != self._track_load_token:
+            return
+        logger.error("Playlist track load failed: %s", error)
         self.status_bar.showMessage(f"Error: {error}")
         QMessageBox.warning(self, "Playlist load failed", f"Could not load tracks for this playlist:\n\n{error}")
 
@@ -503,6 +538,72 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Not found", "That track is not currently in the output folder.")
             return
         self._open_path_in_file_manager(path)
+
+    def _open_output_folder(self):
+        path = self.cfg.get("output_folder", "")
+        if not path:
+            QMessageBox.information(self, "No folder set", "Set an output folder in Settings first.")
+            return
+        self._open_path_in_file_manager(path)
+
+    def _open_debug_log(self):
+        self._open_path_in_file_manager(LOG_FILE)
+
+    def _copy_debug_log_path(self):
+        QApplication.clipboard().setText(LOG_FILE)
+        self.status_bar.showMessage(f"Copied debug log path: {LOG_FILE}", 5000)
+
+    def _export_debug_bundle(self):
+        default_name = os.path.join(
+            self.cfg.get("output_folder", "") or os.path.expanduser("~"),
+            "spotifyvdj-debug-bundle.zip",
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Debug Bundle",
+            default_name,
+            "ZIP Archives (*.zip);;All Files (*)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".zip"):
+            path += ".zip"
+
+        bundle_dir = os.path.dirname(path) or os.path.expanduser("~")
+        os.makedirs(bundle_dir, exist_ok=True)
+
+        redacted_cfg = dict(self.cfg)
+        if redacted_cfg.get("client_secret"):
+            redacted_cfg["client_secret"] = "[REDACTED]"
+        if redacted_cfg.get("client_id"):
+            redacted_cfg["client_id"] = redacted_cfg["client_id"][:4] + "…[REDACTED]"
+
+        system_info = {
+            "app": "Spotify VDJ",
+            "python": sys.version.replace("\n", " "),
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "processor": platform.processor(),
+            "log_file": LOG_FILE,
+            "config_file": config.CONFIG_FILE,
+        }
+
+        files_written = []
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            if os.path.exists(LOG_FILE):
+                zf.write(LOG_FILE, arcname="debug.log")
+                files_written.append("debug.log")
+            zf.writestr("config.redacted.json", json.dumps(redacted_cfg, indent=2, ensure_ascii=False))
+            files_written.append("config.redacted.json")
+            zf.writestr("system-info.json", json.dumps(system_info, indent=2, ensure_ascii=False))
+            files_written.append("system-info.json")
+
+        self.status_bar.showMessage(f"Exported debug bundle: {path}", 5000)
+        QMessageBox.information(
+            self,
+            "Debug bundle exported",
+            "Saved a support bundle containing:\n- " + "\n- ".join(files_written) + f"\n\n{path}",
+        )
 
     def _export_failed_tracks(self, *_):
         failed_tracks = [

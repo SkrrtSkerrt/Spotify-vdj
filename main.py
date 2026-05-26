@@ -1,10 +1,13 @@
 import sys
+import logging
+import subprocess
 from PyQt5.QtWidgets import QApplication, QMessageBox
 from PyQt5.QtGui import QIcon
 
 import config
 import spotify_client as sc
 from downloader import ensure_ffmpeg_available
+from logging_utils import LOG_FILE, install_exception_hook, setup_logging
 from gui.setup_dialog import SetupDialog
 from gui.main_window import MainWindow
 from resource_utils import resource_path
@@ -14,6 +17,7 @@ FFMPEG_DOWNLOAD_URL = "https://www.gyan.dev/ffmpeg/builds/"
 
 
 def show_ffmpeg_missing_dialog() -> None:
+    logging.getLogger("spotify_vdj").error("FFmpeg not found")
     msg = QMessageBox()
     msg.setIcon(QMessageBox.Critical)
     msg.setWindowTitle("FFmpeg Not Found")
@@ -36,7 +40,23 @@ def show_ffmpeg_missing_dialog() -> None:
     msg.exec_()
 
 
+def open_debug_log() -> None:
+    try:
+        if sys.platform == "win32":
+            subprocess.Popen(["notepad.exe", LOG_FILE])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", LOG_FILE])
+        else:
+            subprocess.Popen(["xdg-open", LOG_FILE])
+    except Exception:
+        pass
+
+
 def main():
+    log_path = setup_logging()
+    install_exception_hook(logging.getLogger("spotify_vdj"))
+    logging.getLogger("spotify_vdj").info("Starting Spotify VDJ (debug log: %s)", log_path)
+
     app = QApplication(sys.argv)
     app.setApplicationName("Spotify VDJ")
     app.setStyle("Fusion")
@@ -62,8 +82,9 @@ def main():
         sp = sc.create_client(cfg["client_id"], cfg["client_secret"], cfg["redirect_uri"])
         # Trigger auth immediately so browser opens now
         sp.current_user()
-    except Exception as e:
-        QMessageBox.critical(None, "Spotify Auth Failed", str(e))
+    except Exception as exc:
+        logging.getLogger("spotify_vdj").exception("Spotify authentication failed")
+        QMessageBox.critical(None, "Spotify Auth Failed", str(exc))
         sys.exit(1)
 
     window = MainWindow(sp, cfg)
