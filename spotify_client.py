@@ -135,9 +135,10 @@ def _fetch_playlist_tracks_range(
                 seen.add(entry["id"])
             index += 1
 
-        if result.get("next"):
-            tracks.extend(_fetch_playlist_tracks_range(sp, playlist_id, offset + limit, limit, seen))
-        return tracks
+        if tracks:
+            if result.get("next"):
+                tracks.extend(_fetch_playlist_tracks_range(sp, playlist_id, offset + limit, limit, seen))
+            return tracks
 
     if limit == 1:
         return []

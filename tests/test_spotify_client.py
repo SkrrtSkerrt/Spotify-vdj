@@ -195,6 +195,45 @@ class SpotifyClientPlaylistTests(unittest.TestCase):
         self.assertTrue(any(call.kwargs.get("limit") < 100 for call in sp.playlist_tracks.mock_calls))
         self.assertTrue(any(call.kwargs.get("offset") == 3 for call in sp.playlist_tracks.mock_calls))
 
+    def test_get_tracks_recovers_when_page_has_only_null_track_items(self):
+        sp = MagicMock()
+
+        def playlist_tracks(playlist_id, limit=50, offset=0):
+            del playlist_id
+            total = 6
+            if offset == 0:
+                return {
+                    "items": [
+                        {"track": None},
+                        {"track": None},
+                        {"track": None},
+                    ],
+                    "next": None,
+                }
+            items = []
+            for index in range(offset, min(offset + limit, total)):
+                items.append(
+                    {
+                        "track": {
+                            "id": f"track-{index}",
+                            "uri": f"spotify:track:{index}",
+                            "name": f"Track {index}",
+                            "artists": [{"name": "Artist"}],
+                            "album": {"name": "Album", "images": []},
+                            "duration_ms": 180000,
+                            "preview_url": None,
+                        }
+                    }
+                )
+            return {"items": items, "next": None if offset + limit >= total else "next"}
+
+        sp.playlist_tracks.side_effect = playlist_tracks
+
+        tracks = spotify_client.get_tracks(sp, "playlist-1")
+
+        self.assertEqual([t["id"] for t in tracks], ["track-1", "track-2", "track-3", "track-4", "track-5"])
+        self.assertGreater(len(sp.playlist_tracks.mock_calls), 1)
+
     def test_get_tracks_reports_forbidden_playlists_cleanly(self):
         sp = MagicMock()
         sp.playlist_tracks.side_effect = Exception("HTTP status 403, code 1")
