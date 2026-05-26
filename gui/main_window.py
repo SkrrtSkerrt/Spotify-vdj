@@ -1,12 +1,16 @@
+import csv
 import os
+import subprocess
+import sys
+import webbrowser
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QListWidget, QListWidgetItem, QTableWidget, QTableWidgetItem,
     QPushButton, QLabel, QHeaderView, QSplitter,
     QStatusBar, QAction, QAbstractItemView, QMessageBox,
-    QDockWidget
+    QDockWidget, QFileDialog
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer
 from PyQt5.QtGui import QFont, QColor, QBrush, QIcon
 import spotipy
 
@@ -15,7 +19,6 @@ import spotify_client as sc
 import downloader
 from download_manager import DownloadManager, DownloadJob
 from gui.queue_panel import QueuePanel, QueueEntry
-from gui.preview_player import PreviewPlayer
 from resource_utils import resource_path
 
 
@@ -31,6 +34,7 @@ class TrackState:
     ERROR = "error"
     EXISTS = "exists"
     CANCELLED = "cancelled"
+    LOCAL = "local"
 
 
 class PlaylistLoader(QObject):
@@ -64,8 +68,13 @@ class MainWindow(QMainWindow):
         self.playlists: list[dict] = []
         self.tracks: list[dict] = []
         self.track_states: dict[str, str] = {}
+        self._track_errors: dict[str, str] = {}
+        self._track_paths: dict[str, str] = {}
         self._dl_manager = DownloadManager(max_concurrent=int(cfg.get("max_concurrent_downloads", 2)))
         self._downloaded_paths: list[str] = downloader.build_download_index(cfg.get("output_folder", ""))
+        self._watch_timer = QTimer(self)
+        self._watch_timer.timeout.connect(self._rescan_output_folder)
+        self._configure_folder_watch_timer()
 
         self._progress_signal.connect(self._on_progress)
         self._done_signal.connect(self._on_done)
@@ -92,14 +101,31 @@ class MainWindow(QMainWindow):
         open_folder_action.triggered.connect(self._open_output_folder)
         file_menu.addAction(open_folder_action)
 
+        rescan_action = QAction("Rescan Library", self)
+        rescan_action.triggered.connect(self._rescan_output_folder)
+        file_menu.addAction(rescan_action)
+
+        export_failed_action = QAction("Export Failed Tracks…", self)
+        export_failed_action.triggered.connect(self._export_failed_tracks)
+        file_menu.addAction(export_failed_action)
+
         view_menu = menubar.addMenu("View")
         self._toggle_queue_action = QAction("Show Queue", self, checkable=True, checked=True)
         self._toggle_queue_action.triggered.connect(self._toggle_queue_dock)
         view_menu.addAction(self._toggle_queue_action)
 
-        self._toggle_preview_action = QAction("Show Preview Player", self, checkable=True, checked=True)
-        self._toggle_preview_action.triggered.connect(self._toggle_preview_dock)
-        view_menu.addAction(self._toggle_preview_action)
+        track_menu = menubar.addMenu("Track")
+        self._find_manual_action = QAction("Find Manually", self)
+        self._find_manual_action.triggered.connect(self._find_selected_manually)
+        track_menu.addAction(self._find_manual_action)
+
+        self._retry_failed_action = QAction("Retry Failed", self)
+        self._retry_failed_action.triggered.connect(self._retry_failed_tracks)
+        track_menu.addAction(self._retry_failed_action)
+
+        self._open_file_action = QAction("Open File Location", self)
+        self._open_file_action.triggered.connect(self._open_selected_file_location)
+        track_menu.addAction(self._open_file_action)
 
     # ── Main UI ───────────────────────────────────────────────────────────────
 
@@ -144,19 +170,46 @@ class MainWindow(QMainWindow):
         self.download_all_btn.clicked.connect(self._download_all)
         self.download_all_btn.setEnabled(False)
 
+        self.retry_failed_btn = QPushButton("Retry Failed")
+        self.retry_failed_btn.clicked.connect(self._retry_failed_tracks)
+        self.retry_failed_btn.setEnabled(False)
+
+        self.find_manual_btn = QPushButton("Find Manually")
+        self.find_manual_btn.clicked.connect(self._find_selected_manually)
+        self.find_manual_btn.setEnabled(False)
+
+        self.open_file_btn = QPushButton("Open File Location")
+        self.open_file_btn.clicked.connect(self._open_selected_file_location)
+        self.open_file_btn.setEnabled(False)
+
+        self.rescan_btn = QPushButton("Rescan Library")
+        self.rescan_btn.clicked.connect(self._rescan_output_folder)
+
+        self.export_failed_btn = QPushButton("Export Failed")
+        self.export_failed_btn.clicked.connect(self._export_failed_tracks)
+
         top_bar.addWidget(self.download_selected_btn)
         top_bar.addWidget(self.download_all_btn)
         right_layout.addLayout(top_bar)
 
-        # Track table — extra "Preview" column
+        action_bar = QHBoxLayout()
+        action_bar.addWidget(self.retry_failed_btn)
+        action_bar.addWidget(self.find_manual_btn)
+        action_bar.addWidget(self.open_file_btn)
+        action_bar.addWidget(self.rescan_btn)
+        action_bar.addWidget(self.export_failed_btn)
+        action_bar.addStretch()
+        right_layout.addLayout(action_bar)
+
+        # Track table
         self.track_table = QTableWidget(0, 6)
-        self.track_table.setHorizontalHeaderLabels(["#", "Title", "Artist", "Duration", "Status", "Preview"])
+        self.track_table.setHorizontalHeaderLabels(["#", "Title", "Artist", "Album", "Duration", "Status"])
         self.track_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.track_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.track_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.track_table.setColumnWidth(0, 36)
-        self.track_table.setColumnWidth(3, 66)
-        self.track_table.setColumnWidth(4, 110)
-        self.track_table.setColumnWidth(5, 80)
+        self.track_table.setColumnWidth(4, 66)
+        self.track_table.setColumnWidth(5, 180)
         self.track_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.track_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.track_table.setAlternatingRowColors(True)
@@ -174,22 +227,7 @@ class MainWindow(QMainWindow):
     # ── Dock widgets ──────────────────────────────────────────────────────────
 
     def _build_docks(self):
-        # Preview player dock (bottom)
-        self._preview_dock = QDockWidget("Preview Player", self)
-        self._preview_dock.setAllowedAreas(Qt.BottomDockWidgetArea)
-        self._preview_dock.setFeatures(
-            QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable
-        )
-        self.preview_player = PreviewPlayer()
-        self.preview_player.setFixedHeight(46)
-        self._preview_dock.setWidget(self.preview_player)
-        self._preview_dock.setMaximumHeight(80)
-        self.addDockWidget(Qt.BottomDockWidgetArea, self._preview_dock)
-        self._preview_dock.visibilityChanged.connect(
-            lambda v: self._toggle_preview_action.setChecked(v)
-        )
-
-        # Queue dock (bottom, tabified with preview)
+        # Queue dock (bottom)
         self._queue_dock = QDockWidget("Download Queue", self)
         self._queue_dock.setAllowedAreas(Qt.BottomDockWidgetArea)
         self._queue_dock.setFeatures(
@@ -198,21 +236,15 @@ class MainWindow(QMainWindow):
         self.queue_panel = QueuePanel()
         self.queue_panel.setMinimumHeight(120)
         self.queue_panel.priority_requested.connect(self._on_priority_requested)
+        self.queue_panel.retry_requested.connect(self._retry_track)
         self._queue_dock.setWidget(self.queue_panel)
         self.addDockWidget(Qt.BottomDockWidgetArea, self._queue_dock)
-        self.tabifyDockWidget(self._preview_dock, self._queue_dock)
         self._queue_dock.visibilityChanged.connect(
             lambda v: self._toggle_queue_action.setChecked(v)
         )
 
-        # Show preview tab by default
-        self._preview_dock.raise_()
-
     def _toggle_queue_dock(self, checked: bool):
         self._queue_dock.setVisible(checked)
-
-    def _toggle_preview_dock(self, checked: bool):
-        self._preview_dock.setVisible(checked)
 
     # ── Playlists ─────────────────────────────────────────────────────────────
 
@@ -245,8 +277,11 @@ class MainWindow(QMainWindow):
         self.track_table.setRowCount(0)
         self.tracks = []
         self.track_states = {}
+        self._track_errors = {}
+        self._track_paths = {}
         self.download_all_btn.setEnabled(False)
         self.download_selected_btn.setEnabled(False)
+        self._refresh_action_buttons()
         self.status_bar.showMessage("Loading tracks…")
 
         self._loader_thread = QThread()
@@ -265,49 +300,79 @@ class MainWindow(QMainWindow):
         output_folder = self.cfg.get("output_folder", "")
 
         for i, track in enumerate(tracks):
-            exists = downloader.already_downloaded(track, output_folder, self._downloaded_paths)
-            state = TrackState.EXISTS if exists else TrackState.PENDING
+            if track.get("is_local"):
+                state = TrackState.LOCAL
+                status_text = "Local track"
+                status_color = "#8d6e63"
+                status_tip = "Stored locally in Spotify; it cannot be downloaded from Spotify."
+            else:
+                exists = downloader.already_downloaded(track, output_folder, self._downloaded_paths)
+                state = TrackState.EXISTS if exists else TrackState.PENDING
+                status_text = "Downloaded" if exists else ""
+                status_color = "#2e7d32"
+                status_tip = None
+
             self.track_states[track["id"]] = state
 
             self.track_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
             self.track_table.setItem(i, 1, QTableWidgetItem(track["name"]))
             self.track_table.setItem(i, 2, QTableWidgetItem(track["artist"]))
-            self.track_table.setItem(i, 3, QTableWidgetItem(_fmt_duration(track["duration_ms"])))
+            self.track_table.setItem(i, 3, QTableWidgetItem(track.get("album", "")))
+            self.track_table.setItem(i, 4, QTableWidgetItem(_fmt_duration(track["duration_ms"])))
 
-            status_item = QTableWidgetItem("Downloaded" if exists else "")
-            if exists:
-                status_item.setForeground(QBrush(QColor("#2e7d32")))
+            status_item = QTableWidgetItem(status_text)
+            if state == TrackState.EXISTS:
+                status_item.setForeground(QBrush(QColor(status_color)))
                 existing_path = downloader.find_existing_download_path(track, output_folder, self._downloaded_paths)
                 if existing_path:
                     status_item.setToolTip(f"Already in folder: {existing_path}")
-            self.track_table.setItem(i, 4, status_item)
-
-            # Preview button — greyed out if Spotify has no clip
-            preview_btn = QPushButton("▶ Preview" if track.get("preview_url") else "No clip")
-            preview_btn.setEnabled(bool(track.get("preview_url")))
-            preview_btn.setFixedHeight(22)
-            preview_btn.clicked.connect(self._make_preview_handler(track))
-            self.track_table.setCellWidget(i, 5, preview_btn)
+            elif state == TrackState.LOCAL:
+                status_item.setForeground(QBrush(QColor(status_color)))
+                status_item.setToolTip(status_tip)
+            self.track_table.setItem(i, 5, status_item)
 
         self.download_all_btn.setEnabled(True)
         pending = sum(1 for s in self.track_states.values() if s == TrackState.PENDING)
         self.status_bar.showMessage(f"{len(tracks)} tracks  ·  {pending} not yet downloaded")
-
-    def _make_preview_handler(self, track: dict):
-        def _handler():
-            self.preview_player.load_track(track)
-            self._preview_dock.raise_()
-        return _handler
+        self._refresh_action_buttons()
 
     # ── Downloads ─────────────────────────────────────────────────────────────
 
     def _update_download_btn(self):
-        rows = set(item.row() for item in self.track_table.selectedItems())
-        self.download_selected_btn.setEnabled(len(rows) > 0)
+        self._refresh_action_buttons()
+
+    def _refresh_action_buttons(self):
+        rows = sorted(set(item.row() for item in self.track_table.selectedItems()))
+        selected_tracks = [self.tracks[r] for r in rows if r < len(self.tracks)]
+        selected_states = [self.track_states.get(track["id"]) for track in selected_tracks]
+
+        has_selected_non_local = any(not track.get("is_local") for track in selected_tracks)
+        has_downloadable = any(
+            not track.get("is_local") and state in (TrackState.PENDING, TrackState.ERROR, TrackState.CANCELLED)
+            for track, state in zip(selected_tracks, selected_states)
+        )
+        has_failed = any(state in (TrackState.ERROR, TrackState.CANCELLED) for state in selected_states)
+        has_existing = any(state in (TrackState.DONE, TrackState.EXISTS) for state in selected_states)
+        any_failed_in_library = any(
+            state in (TrackState.ERROR, TrackState.CANCELLED) for state in self.track_states.values()
+        )
+
+        self.download_selected_btn.setEnabled(has_downloadable)
+        self.retry_failed_btn.setEnabled(any_failed_in_library)
+        self.find_manual_btn.setEnabled(has_selected_non_local)
+        self.open_file_btn.setEnabled(has_existing)
+        self.export_failed_btn.setEnabled(any_failed_in_library)
 
     def _download_selected(self):
         rows = set(item.row() for item in self.track_table.selectedItems())
-        tracks = [self.tracks[r] for r in rows if r < len(self.tracks)]
+        tracks = [self.tracks[r] for r in rows if r < len(self.tracks) and not self.tracks[r].get("is_local")]
+        if rows and not tracks:
+            QMessageBox.information(
+                self,
+                "Local tracks",
+                "The selected items are local Spotify files. They can be viewed, but Spotify does not expose them for download.",
+            )
+            return
         self._start_downloads(tracks)
 
     def _download_all(self):
@@ -317,6 +382,151 @@ class MainWindow(QMainWindow):
             return
         self._start_downloads(pending)
 
+    def _retry_failed_tracks(self, *_):
+        failed = [
+            track for track in self.tracks
+            if self.track_states.get(track["id"]) in (TrackState.ERROR, TrackState.CANCELLED)
+        ]
+        if not failed:
+            QMessageBox.information(self, "Nothing to retry", "There are no failed tracks to retry.")
+            return
+        self._start_downloads(failed)
+
+    def _retry_track(self, track_id: str):
+        for track in self.tracks:
+            if track["id"] == track_id:
+                if self.track_states.get(track_id) in (TrackState.ERROR, TrackState.CANCELLED):
+                    self._start_downloads([track])
+                return
+
+    def _find_selected_manually(self, *_):
+        track = self._selected_track(lambda t: not t.get("is_local"))
+        if not track:
+            QMessageBox.information(self, "No track selected", "Select a track first.")
+            return
+        if track.get("is_local"):
+            QMessageBox.information(self, "Local track", "Spotify local files cannot be searched or downloaded through the web search flow.")
+            return
+        webbrowser.open(downloader.youtube_search_url(track))
+
+    def _open_selected_file_location(self, *_):
+        track = self._selected_track(lambda t: self.track_states.get(t["id"]) in (TrackState.DONE, TrackState.EXISTS))
+        if not track:
+            QMessageBox.information(self, "No track selected", "Select a downloaded track first.")
+            return
+        path = downloader.find_existing_download_path(track, self.cfg.get("output_folder", ""), self._downloaded_paths)
+        if not path:
+            QMessageBox.information(self, "Not found", "That track is not currently in the output folder.")
+            return
+        self._open_path_in_file_manager(path)
+
+    def _export_failed_tracks(self, *_):
+        failed_tracks = [
+            track for track in self.tracks
+            if self.track_states.get(track["id"]) in (TrackState.ERROR, TrackState.CANCELLED)
+        ]
+        if not failed_tracks:
+            QMessageBox.information(self, "Nothing to export", "There are no failed tracks to export.")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export failed tracks",
+            os.path.join(self.cfg.get("output_folder", "") or os.path.expanduser("~"), "spotifyvdj-failed-tracks.csv"),
+            "CSV Files (*.csv);;All Files (*)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".csv"):
+            path += ".csv"
+
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Title", "Artist", "Album", "Status", "Error", "Manual Search", "Output Path"])
+            for track in failed_tracks:
+                track_id = track["id"]
+                error = self._track_errors.get(track_id, self._status_tooltip_for_track(track_id))
+                writer.writerow([
+                    track.get("name", ""),
+                    track.get("artist", ""),
+                    track.get("album", ""),
+                    self.track_states.get(track_id, ""),
+                    error or "",
+                    downloader.youtube_search_url(track),
+                    self._track_paths.get(track_id, ""),
+                ])
+        QMessageBox.information(self, "Export complete", f"Saved failed tracks to:\n{path}")
+
+
+    def _selected_track(self, predicate=None) -> dict | None:
+        rows = sorted(set(item.row() for item in self.track_table.selectedItems()))
+        for row in rows:
+            if 0 <= row < len(self.tracks):
+                track = self.tracks[row]
+                if predicate is None or predicate(track):
+                    return track
+        return None
+
+    def _open_path_in_file_manager(self, path: str):
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", "/select,", path])
+            return
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", path])
+            return
+        subprocess.Popen(["xdg-open", os.path.dirname(path) or path])
+
+    def _status_tooltip_for_track(self, track_id: str) -> str:
+        for row, track in enumerate(self.tracks):
+            if track["id"] == track_id:
+                item = self.track_table.item(row, 5)
+                return item.toolTip() if item else ""
+        return ""
+
+    def _configure_folder_watch_timer(self):
+        watch_enabled = bool(self.cfg.get("watch_output_folder", True))
+        interval = max(5, int(self.cfg.get("watch_interval_seconds", 30)))
+        self._watch_timer.setInterval(interval * 1000)
+        if watch_enabled:
+            self._watch_timer.start()
+        else:
+            self._watch_timer.stop()
+
+    def _rescan_output_folder(self, *_):
+        output_folder = self.cfg.get("output_folder", "")
+        self._downloaded_paths = downloader.build_download_index(output_folder)
+        if not self.tracks:
+            self.status_bar.showMessage("Output folder rescanned")
+            return
+
+        for track in self.tracks:
+            if track.get("is_local"):
+                continue
+            track_id = track["id"]
+            current_state = self.track_states.get(track_id)
+            if current_state == TrackState.DOWNLOADING:
+                continue
+
+            existing_path = downloader.find_existing_download_path(track, output_folder, self._downloaded_paths)
+            if existing_path:
+                self.track_states[track_id] = TrackState.EXISTS
+                self._track_paths[track_id] = existing_path
+                self._track_errors.pop(track_id, None)
+                self._set_track_status(track_id, "Downloaded", "#2e7d32", tooltip=f"Already in folder: {existing_path}")
+                self.queue_panel.update_progress(track_id, "Downloaded", 100)
+            elif current_state in (TrackState.EXISTS, TrackState.DONE):
+                self.track_states[track_id] = TrackState.PENDING
+                self._track_paths.pop(track_id, None)
+                self._set_track_status(track_id, "", "#000000")
+            elif current_state == TrackState.ERROR and self._track_errors.get(track_id):
+                self._set_track_status(track_id, "Error", "#c62828", tooltip=self._track_errors.get(track_id))
+
+        self._refresh_action_buttons()
+        pending = sum(1 for s in self.track_states.values() if s == TrackState.PENDING)
+        available = sum(1 for s in self.track_states.values() if s in (TrackState.DONE, TrackState.EXISTS))
+        self.status_bar.showMessage(f"Rescanned output folder: {available}/{len(self.tracks)} available, {pending} pending")
+
+
     def _start_downloads(self, tracks: list[dict]):
         output_folder = self.cfg.get("output_folder", "")
         if not output_folder:
@@ -325,6 +535,8 @@ class MainWindow(QMainWindow):
 
         queued = 0
         for track in tracks:
+            if track.get("is_local"):
+                continue
             state = self.track_states.get(track["id"])
             if state in (TrackState.DOWNLOADING, TrackState.DONE, TrackState.EXISTS):
                 continue
@@ -332,10 +544,14 @@ class MainWindow(QMainWindow):
             existing_path = downloader.find_existing_download_path(track, output_folder, self._downloaded_paths)
             if existing_path:
                 self.track_states[track["id"]] = TrackState.EXISTS
+                self._track_paths[track["id"]] = existing_path
+                self._track_errors.pop(track["id"], None)
                 self._set_track_status(track["id"], "Downloaded", "#2e7d32", tooltip=f"Already in folder: {existing_path}")
                 continue
 
             self.track_states[track["id"]] = TrackState.DOWNLOADING
+            self._track_errors.pop(track["id"], None)
+            self._track_paths.pop(track["id"], None)
             self._set_track_status(track["id"], "Queued…", "#1565c0")
             queued += 1
 
@@ -343,6 +559,7 @@ class MainWindow(QMainWindow):
                 track_id=track["id"],
                 name=track["name"],
                 artist=track["artist"],
+                album=track.get("album", ""),
                 status="Queued",
             )
             self.queue_panel.add(entry)
@@ -357,6 +574,7 @@ class MainWindow(QMainWindow):
             # cancel_fn wired after enqueue so handle exists
             self.queue_panel.set_cancel_fn(track["id"], lambda tid=track["id"]: self._dl_manager.cancel(tid))
 
+        self._refresh_action_buttons()
         if queued:
             self._queue_dock.raise_()
             self.status_bar.showMessage(f"Queued {queued} track(s) for download…")
@@ -383,21 +601,27 @@ class MainWindow(QMainWindow):
     def _on_done(self, track_id: str, success: bool, path_or_error: str):
         if success:
             self.track_states[track_id] = TrackState.DONE
-            self._set_track_status(track_id, "Downloaded", "#2e7d32")
+            self._track_errors.pop(track_id, None)
+            self._track_paths[track_id] = path_or_error
+            self._set_track_status(track_id, "Downloaded", "#2e7d32", tooltip=path_or_error)
             self.queue_panel.update_progress(track_id, "Downloaded", 100)
             if path_or_error and path_or_error not in self._downloaded_paths:
                 self._downloaded_paths.append(path_or_error)
         elif path_or_error == "Cancelled":
             self.track_states[track_id] = TrackState.CANCELLED
-            self._set_track_status(track_id, "Cancelled", "#888")
+            self._track_paths.pop(track_id, None)
+            self._set_track_status(track_id, "Cancelled", "#888", tooltip="Download cancelled")
             self.queue_panel.update_progress(track_id, "Cancelled", 0)
         else:
             self.track_states[track_id] = TrackState.ERROR
-            self._set_track_status(track_id, f"Error", "#c62828", tooltip=path_or_error)
+            self._track_paths.pop(track_id, None)
+            self._track_errors[track_id] = path_or_error
+            self._set_track_status(track_id, "Error", "#c62828", tooltip=path_or_error)
             self.queue_panel.update_progress(track_id, f"Error: {path_or_error.splitlines()[0][:120]}", 0)
 
         active = sum(1 for s in self.track_states.values() if s == TrackState.DOWNLOADING)
         done = sum(1 for s in self.track_states.values() if s in (TrackState.DONE, TrackState.EXISTS))
+        self._refresh_action_buttons()
         if active == 0:
             self.status_bar.showMessage(f"{done}/{len(self.tracks)} tracks available in VDJ folder")
 
@@ -408,7 +632,7 @@ class MainWindow(QMainWindow):
                 item.setForeground(QBrush(QColor(color)))
                 if tooltip:
                     item.setToolTip(tooltip)
-                self.track_table.setItem(i, 4, item)
+                self.track_table.setItem(i, 5, item)
                 return
 
     # ── Settings / helpers ────────────────────────────────────────────────────
@@ -426,6 +650,8 @@ class MainWindow(QMainWindow):
                 )
                 self._dl_manager.set_max_concurrent(int(self.cfg.get("max_concurrent_downloads", 2)))
                 self._downloaded_paths = downloader.build_download_index(self.cfg.get("output_folder", ""))
+                self._configure_folder_watch_timer()
+                self._rescan_output_folder()
                 self._load_playlists()
             except Exception as e:
                 QMessageBox.critical(self, "Auth Error", str(e))

@@ -11,6 +11,8 @@ DEFAULTS = {
     "audio_format": "mp3",
     "audio_quality": "320",
     "max_concurrent_downloads": 2,
+    "watch_output_folder": True,
+    "watch_interval_seconds": 30,
 }
 
 

@@ -1,6 +1,7 @@
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QFileDialog, QMessageBox, QGroupBox, QApplication, QSpinBox
+    QPushButton, QFileDialog, QMessageBox, QGroupBox, QApplication, QSpinBox,
+    QCheckBox
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QIcon
@@ -112,6 +113,25 @@ class SetupDialog(QDialog):
         queue_note.setStyleSheet("color: #555; font-size: 8pt;")
         layout.addWidget(queue_note)
 
+        watch_group = QGroupBox("Step 5 — Keep the library synced")
+        watch_layout = QHBoxLayout(watch_group)
+        self.watch_output_checkbox = QCheckBox("Auto-rescan the output folder")
+        self.watch_output_checkbox.setChecked(bool(self.cfg.get("watch_output_folder", True)))
+        watch_layout.addWidget(self.watch_output_checkbox)
+        watch_layout.addWidget(QLabel("every"))
+        self.watch_interval_input = QSpinBox()
+        self.watch_interval_input.setRange(5, 300)
+        self.watch_interval_input.setValue(int(self.cfg.get("watch_interval_seconds", 30)))
+        watch_layout.addWidget(self.watch_interval_input)
+        watch_layout.addWidget(QLabel("seconds"))
+        watch_layout.addStretch()
+        layout.addWidget(watch_group)
+
+        watch_note = QLabel("This keeps the app aligned with files you add or remove outside Spotify VDJ.")
+        watch_note.setWordWrap(True)
+        watch_note.setStyleSheet("color: #555; font-size: 8pt;")
+        layout.addWidget(watch_note)
+
         # Buttons
         btn_layout = QHBoxLayout()
         cancel_btn = QPushButton("Cancel")
@@ -157,6 +177,8 @@ class SetupDialog(QDialog):
         self.cfg["output_folder"] = folder
         self.cfg["redirect_uri"] = redirect_uri
         self.cfg["max_concurrent_downloads"] = int(self.max_concurrent_input.value())
+        self.cfg["watch_output_folder"] = bool(self.watch_output_checkbox.isChecked())
+        self.cfg["watch_interval_seconds"] = int(self.watch_interval_input.value())
         config.save(self.cfg)
         self.accept()
 

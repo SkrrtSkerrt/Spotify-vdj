@@ -68,6 +68,44 @@ class SpotifyClientPlaylistTests(unittest.TestCase):
         ])
         sp.playlist.assert_called_once_with("abc", fields="tracks.total")
 
+    def test_get_tracks_keeps_local_playlist_items(self):
+        sp = MagicMock()
+        sp.playlist_tracks.return_value = {
+            "items": [
+                {
+                    "track": {
+                        "id": None,
+                        "uri": "spotify:local:123",
+                        "is_local": True,
+                        "name": "My Local Track",
+                        "artists": [{"name": "Local Artist"}],
+                        "album": {"name": "Local Album", "images": []},
+                        "duration_ms": 123000,
+                        "preview_url": None,
+                    }
+                }
+            ],
+            "next": None,
+        }
+
+        tracks = spotify_client.get_tracks(sp, "playlist-1")
+
+        self.assertEqual(len(tracks), 1)
+        self.assertEqual(tracks[0]["id"], "spotify:local:123")
+        self.assertTrue(tracks[0]["is_local"])
+        self.assertEqual(tracks[0]["name"], "My Local Track")
+        self.assertEqual(tracks[0]["artist"], "Local Artist")
+
+    def test_get_tracks_reports_forbidden_playlists_cleanly(self):
+        sp = MagicMock()
+        sp.playlist_tracks.side_effect = Exception("HTTP status 403, code 1")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            spotify_client.get_tracks(sp, "playlist-403")
+
+        self.assertIn("403", str(ctx.exception))
+        self.assertIn("removed", str(ctx.exception).lower())
+
 
 if __name__ == "__main__":
     unittest.main()

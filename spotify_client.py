@@ -52,6 +52,34 @@ def _playlist_total(sp: spotipy.Spotify, playlist_id: str, item: dict) -> int:
         return total or 0
 
 
+def _playlist_access_error(error: Exception, playlist_id: str) -> RuntimeError:
+    details = str(error).strip() or error.__class__.__name__
+    lowered = details.lower()
+    if "403" in lowered or "code 1" in lowered or "forbidden" in lowered:
+        return RuntimeError(
+            f"Spotify refused access to playlist {playlist_id} (HTTP 403, code 1). "
+            "The playlist may have been removed, made unavailable, or your account may not have access to its tracks."
+        )
+    return RuntimeError(details)
+
+
+def _build_track_entry(track: dict, playlist_id: str, index: int) -> dict:
+    artists = ", ".join(a["name"] for a in track.get("artists", []))
+    album = track.get("album", {})
+    image = album.get("images", [{}])[0].get("url") if album.get("images") else None
+    track_id = track.get("id") or track.get("uri") or f"{playlist_id}:{index}"
+    return {
+        "id": track_id,
+        "name": track.get("name", ""),
+        "artist": artists,
+        "album": album.get("name", ""),
+        "duration_ms": track.get("duration_ms", 0),
+        "image": image,
+        "preview_url": track.get("preview_url"),
+        "is_local": bool(track.get("is_local")),
+    }
+
+
 def get_playlists(sp: spotipy.Spotify) -> list[dict]:
     playlists = []
     result = sp.current_user_playlists(limit=50)
@@ -70,27 +98,19 @@ def get_playlists(sp: spotipy.Spotify) -> list[dict]:
 
 def get_tracks(sp: spotipy.Spotify, playlist_id: str) -> list[dict]:
     tracks = []
-    result = sp.playlist_tracks(playlist_id, limit=100)
-    while result:
-        for item in result["items"]:
-            if not item or not item.get("track"):
-                continue
-            track = item["track"]
-            if track.get("is_local"):
-                continue
-            artists = ", ".join(a["name"] for a in track.get("artists", []))
-            album = track.get("album", {})
-            image = album.get("images", [{}])[0].get("url") if album.get("images") else None
-            tracks.append({
-                "id": track["id"],
-                "name": track["name"],
-                "artist": artists,
-                "album": album.get("name", ""),
-                "duration_ms": track.get("duration_ms", 0),
-                "image": image,
-                "preview_url": track.get("preview_url"),
-            })
-        result = sp.next(result) if result.get("next") else None
+    try:
+        result = sp.playlist_tracks(playlist_id, limit=100)
+        index = 0
+        while result:
+            for item in result["items"]:
+                if not item or not item.get("track"):
+                    continue
+                track = item["track"]
+                tracks.append(_build_track_entry(track, playlist_id, index))
+                index += 1
+            result = sp.next(result) if result.get("next") else None
+    except Exception as e:
+        raise _playlist_access_error(e, playlist_id) from e
     return tracks
 
 
@@ -98,21 +118,10 @@ def get_liked_tracks(sp: spotipy.Spotify) -> list[dict]:
     tracks = []
     result = sp.current_user_saved_tracks(limit=50)
     while result:
-        for item in result["items"]:
+        for index, item in enumerate(result["items"], start=len(tracks)):
             if not item or not item.get("track"):
                 continue
             track = item["track"]
-            artists = ", ".join(a["name"] for a in track.get("artists", []))
-            album = track.get("album", {})
-            image = album.get("images", [{}])[0].get("url") if album.get("images") else None
-            tracks.append({
-                "id": track["id"],
-                "name": track["name"],
-                "artist": artists,
-                "album": album.get("name", ""),
-                "duration_ms": track.get("duration_ms", 0),
-                "image": image,
-                "preview_url": track.get("preview_url"),
-            })
+            tracks.append(_build_track_entry(track, "liked", index))
         result = sp.next(result) if result.get("next") else None
     return tracks

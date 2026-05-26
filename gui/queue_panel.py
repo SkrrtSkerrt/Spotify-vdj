@@ -13,6 +13,7 @@ class QueueEntry:
     track_id: str
     name: str
     artist: str
+    album: str = ""
     status: str = "Queued"
     progress: float = 0.0
     cancel_fn: Callable | None = None
@@ -21,12 +22,13 @@ class QueueEntry:
 class QueueRow(QFrame):
     cancelled = pyqtSignal(str)    # track_id
     prioritized = pyqtSignal(str)  # track_id
+    retry_requested = pyqtSignal(str)  # track_id
 
     def __init__(self, entry: QueueEntry, parent=None):
         super().__init__(parent)
         self.track_id = entry.track_id
         self.setFrameShape(QFrame.StyledPanel)
-        self.setMaximumHeight(56)
+        self.setMaximumHeight(64)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -65,6 +67,12 @@ class QueueRow(QFrame):
         self._priority_btn.clicked.connect(lambda: self.prioritized.emit(self.track_id))
         layout.addWidget(self._priority_btn)
 
+        self._retry_btn = QPushButton("↻")
+        self._retry_btn.setFixedSize(24, 24)
+        self._retry_btn.setToolTip("Retry download")
+        self._retry_btn.clicked.connect(lambda: self.retry_requested.emit(self.track_id))
+        layout.addWidget(self._retry_btn)
+
         self._cancel_btn = QPushButton("✕")
         self._cancel_btn.setFixedSize(24, 24)
         self._cancel_btn.setToolTip("Cancel download")
@@ -86,11 +94,11 @@ class QueueRow(QFrame):
         self._bar.setValue(int(progress))
 
         queued = status == "Queued"
-        active = status not in ("Downloaded", "Cancelled", "Queued") and not status.startswith("Error")
         done = status == "Downloaded"
         failed = status.startswith("Error") or status == "Cancelled"
 
         self._priority_btn.setVisible(queued)
+        self._retry_btn.setVisible(failed)
         self._cancel_btn.setEnabled(not done and not failed)
         self._cancel_btn.setText("✓" if done else "✕")
 
@@ -107,6 +115,7 @@ class QueuePanel(QWidget):
     """Scrollable download queue with priority jumping."""
 
     priority_requested = pyqtSignal(str)  # track_id — connect to DownloadManager.prioritize
+    retry_requested = pyqtSignal(str)     # track_id — connect to MainWindow._retry_track
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -166,6 +175,10 @@ class QueuePanel(QWidget):
 
     def add(self, entry: QueueEntry):
         if entry.track_id in self._rows:
+            self._entries[entry.track_id] = entry
+            self._rows[entry.track_id].update(entry.status, entry.progress)
+            self._rows[entry.track_id].mark_next(False)
+            self._refresh_counts()
             return
         self._entries[entry.track_id] = entry
         self._empty_label.hide()
@@ -173,6 +186,7 @@ class QueuePanel(QWidget):
         row = QueueRow(entry)
         row.cancelled.connect(self._on_cancel)
         row.prioritized.connect(self._on_prioritize)
+        row.retry_requested.connect(self._on_retry)
         self._rows[entry.track_id] = row
         self._row_order.append(entry.track_id)
         # Insert before trailing stretch
@@ -234,6 +248,9 @@ class QueuePanel(QWidget):
     def _on_prioritize(self, track_id: str):
         self.move_to_top(track_id)
         self.priority_requested.emit(track_id)
+
+    def _on_retry(self, track_id: str):
+        self.retry_requested.emit(track_id)
 
     def _remove_row(self, track_id: str):
         row = self._rows.pop(track_id, None)

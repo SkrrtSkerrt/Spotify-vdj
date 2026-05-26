@@ -69,6 +69,8 @@ class DownloaderTests(unittest.TestCase):
         self.assertIn("FFmpeg", msg)
         self.assertIn("Artist - Song", msg)
         self.assertIn("conversion", msg.lower())
+        self.assertIn("Manual search", msg)
+        self.assertIn("youtube.com/results", msg)
 
     def test_download_track_falls_back_to_second_query_after_unavailable_candidate(self):
         track = {"id": "trk1", "artist": "Artist", "name": "Song", "duration_ms": 180000}
@@ -113,10 +115,29 @@ class DownloaderTests(unittest.TestCase):
         download2_ctx.__enter__.return_value = download2_ydl
         download2_ctx.__exit__.return_value = False
 
+        search3_ydl = MagicMock()
+        search3_ydl.extract_info.return_value = {
+            "entries": [
+                {
+                    "webpage_url": "https://www.youtube.com/watch?v=good3",
+                    "duration": 182,
+                    "availability": "public",
+                }
+            ]
+        }
+        search3_ctx = MagicMock()
+        search3_ctx.__enter__.return_value = search3_ydl
+        search3_ctx.__exit__.return_value = False
+
+        download3_ydl = MagicMock()
+        download3_ctx = MagicMock()
+        download3_ctx.__enter__.return_value = download3_ydl
+        download3_ctx.__exit__.return_value = False
+
         with tempfile.TemporaryDirectory() as outdir, \
                 patch("downloader.ensure_ffmpeg_available", return_value="/ffmpeg"), \
                 patch("downloader.threading.Thread", ImmediateThread), \
-                patch("downloader.yt_dlp.YoutubeDL", side_effect=[search1_ctx, download1_ctx, search2_ctx, download2_ctx]):
+                patch("downloader.yt_dlp.YoutubeDL", side_effect=[search1_ctx, download1_ctx, search2_ctx, download2_ctx, search3_ctx, download3_ctx]):
             downloader.download_track(
                 track,
                 outdir,

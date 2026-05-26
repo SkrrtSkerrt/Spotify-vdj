@@ -150,6 +150,10 @@ def format_download_error(error: Exception | str, track: dict, source_url: str |
     else:
         lines.append("Try a different result or search manually if this keeps happening.")
 
+    manual_search = youtube_search_url(track)
+    lines.append(f"Manual search: {manual_search}")
+    lines.append("If you find a usable copy, download it or add it into the configured output folder, then refresh the library.")
+
     if source_url:
         lines.append(f"Source: {source_url}")
     lines.append(f"Details: {details}")
