@@ -52,13 +52,23 @@ def _playlist_total(sp: spotipy.Spotify, playlist_id: str, item: dict) -> int:
         return total or 0
 
 
-def _playlist_access_error(error: Exception, playlist_id: str) -> RuntimeError:
+def _playlist_list_error(error: Exception) -> RuntimeError:
     details = str(error).strip() or error.__class__.__name__
     lowered = details.lower()
-    if "403" in lowered or "code 1" in lowered or "forbidden" in lowered:
+    if "401" in lowered or "unauthorized" in lowered or "invalid token" in lowered:
         return RuntimeError(
-            f"Spotify refused access to playlist {playlist_id} (HTTP 403, code 1). "
-            "The playlist may have been removed, made unavailable, or your account may not have access to its tracks."
+            "Spotify authentication failed while loading playlists. "
+            "Please re-check your Client ID, Client Secret, and redirect URI, then sign in again."
+        )
+    if "403" in lowered or "forbidden" in lowered:
+        return RuntimeError(
+            "Spotify refused access while loading playlists (HTTP 403). "
+            "The account may not have permission to read one or more playlists, or Spotify may be rate-limiting the request."
+        )
+    if "timeout" in lowered or "timed out" in lowered or "connection" in lowered or "network" in lowered:
+        return RuntimeError(
+            "Spotify playlists could not be loaded because the network request failed or timed out. "
+            "Check your internet connection and try again."
         )
     return RuntimeError(details)
 
@@ -86,23 +96,53 @@ def _build_track_entry(track: dict, playlist_id: str, index: int) -> dict:
     }
 
 
-def _playlist_list_error(error: Exception) -> RuntimeError:
+def _fetch_playlist_tracks_range(
+    sp: spotipy.Spotify,
+    playlist_id: str,
+    offset: int,
+    limit: int,
+    seen: set[str] | None = None,
+) -> list[dict]:
+    if seen is None:
+        seen = set()
+    if limit <= 0:
+        return []
+
+    result = sp.playlist_tracks(playlist_id, limit=limit, offset=offset)
+    items = result.get("items") or []
+
+    if items:
+        tracks = []
+        index = offset
+        for item in items:
+            if not item or not item.get("track"):
+                index += 1
+                continue
+            entry = _build_track_entry(item["track"], playlist_id, index)
+            if entry["id"] not in seen:
+                tracks.append(entry)
+                seen.add(entry["id"])
+            index += 1
+
+        if result.get("next"):
+            tracks.extend(_fetch_playlist_tracks_range(sp, playlist_id, offset + limit, limit, seen))
+        return tracks
+
+    if limit == 1:
+        return []
+
+    left = limit // 2
+    right = limit - left
+    return _fetch_playlist_tracks_range(sp, playlist_id, offset, left, seen) + _fetch_playlist_tracks_range(sp, playlist_id, offset + left, right, seen)
+
+
+def _playlist_access_error(error: Exception, playlist_id: str) -> RuntimeError:
     details = str(error).strip() or error.__class__.__name__
     lowered = details.lower()
-    if "401" in lowered or "unauthorized" in lowered or "invalid token" in lowered:
+    if "403" in lowered or "code 1" in lowered or "forbidden" in lowered:
         return RuntimeError(
-            "Spotify authentication failed while loading playlists. "
-            "Please re-check your Client ID, Client Secret, and redirect URI, then sign in again."
-        )
-    if "403" in lowered or "forbidden" in lowered:
-        return RuntimeError(
-            "Spotify refused access while loading playlists (HTTP 403). "
-            "The account may not have permission to read one or more playlists, or Spotify may be rate-limiting the request."
-        )
-    if "timeout" in lowered or "timed out" in lowered or "connection" in lowered or "network" in lowered:
-        return RuntimeError(
-            "Spotify playlists could not be loaded because the network request failed or timed out. "
-            "Check your internet connection and try again."
+            f"Spotify refused access to playlist {playlist_id} (HTTP 403, code 1). "
+            "The playlist may have been removed, made unavailable, or your account may not have access to its tracks."
         )
     return RuntimeError(details)
 
@@ -127,21 +167,10 @@ def get_playlists(sp: spotipy.Spotify) -> list[dict]:
 
 
 def get_tracks(sp: spotipy.Spotify, playlist_id: str) -> list[dict]:
-    tracks = []
     try:
-        result = sp.playlist_tracks(playlist_id, limit=100)
-        index = 0
-        while result:
-            for item in result["items"]:
-                if not item or not item.get("track"):
-                    continue
-                track = item["track"]
-                tracks.append(_build_track_entry(track, playlist_id, index))
-                index += 1
-            result = sp.next(result) if result.get("next") else None
+        return _fetch_playlist_tracks_range(sp, playlist_id, 0, 100)
     except Exception as e:
         raise _playlist_access_error(e, playlist_id) from e
-    return tracks
 
 
 def get_liked_tracks(sp: spotipy.Spotify) -> list[dict]:

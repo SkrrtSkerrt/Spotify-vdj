@@ -100,6 +100,7 @@ class MainWindow(QMainWindow):
         self._playlist_loader = None
         self._active_threads = set()
         self._track_load_token = 0
+        self._current_playlist_total = None
 
         self._progress_signal.connect(self._on_progress)
         self._done_signal.connect(self._on_done)
@@ -326,11 +327,13 @@ class MainWindow(QMainWindow):
 
         liked_item = QListWidgetItem("♥ Liked Songs")
         liked_item.setData(Qt.UserRole, "__liked__")
+        liked_item.setData(Qt.UserRole + 1, None)
         self.playlist_list.addItem(liked_item)
 
         for pl in self.playlists:
             item = QListWidgetItem(f"{pl['name']}  ({pl['total']})")
             item.setData(Qt.UserRole, pl["id"])
+            item.setData(Qt.UserRole + 1, pl.get("total"))
             self.playlist_list.addItem(item)
 
         self.status_bar.showMessage(f"Loaded {len(self.playlists)} playlists")
@@ -363,6 +366,7 @@ class MainWindow(QMainWindow):
         playlist_id = item.data(Qt.UserRole)
         if not playlist_id:
             return
+        self._current_playlist_total = item.data(Qt.UserRole + 1)
         logger.info("Loading playlist tracks: %s (%s)", item.text(), playlist_id)
         self.playlist_title.setText(item.text())
         self.track_table.setRowCount(0)
@@ -429,7 +433,17 @@ class MainWindow(QMainWindow):
 
         self.download_all_btn.setEnabled(True)
         pending = sum(1 for s in self.track_states.values() if s == TrackState.PENDING)
-        self.status_bar.showMessage(f"{len(tracks)} tracks  ·  {pending} not yet downloaded")
+        total_hint = self._current_playlist_total
+        if isinstance(total_hint, int) and total_hint > 0 and len(tracks) < total_hint:
+            msg = (
+                f"Spotify returned {len(tracks)} of {total_hint} tracks for this playlist. "
+                "This usually means the playlist contains local files or other items the Spotify Web API cannot return."
+            )
+            logger.warning(msg)
+            self.status_bar.showMessage(msg)
+            QMessageBox.warning(self, "Partial playlist load", msg)
+        else:
+            self.status_bar.showMessage(f"{len(tracks)} tracks  ·  {pending} not yet downloaded")
         self._refresh_action_buttons()
 
     def _on_tracks_load_error(self, token: int, error: str):

@@ -131,6 +131,44 @@ class SpotifyClientPlaylistTests(unittest.TestCase):
         self.assertEqual(tracks[0]["artist"], "")
         self.assertEqual(tracks[0]["album"], "")
 
+    def test_get_tracks_recovers_tracks_around_local_file_boundaries(self):
+        sp = MagicMock()
+
+        def playlist_tracks(playlist_id, limit=50, offset=0):
+            del playlist_id
+            start = offset
+            end = offset + limit
+            local_index = 3
+            total = 6
+
+            if start <= local_index < end:
+                return {"items": [], "next": None}
+
+            items = []
+            for index in range(start, min(end, total)):
+                items.append(
+                    {
+                        "track": {
+                            "id": f"track-{index}",
+                            "uri": f"spotify:track:{index}",
+                            "name": f"Track {index}",
+                            "artists": [{"name": "Artist"}],
+                            "album": {"name": "Album", "images": []},
+                            "duration_ms": 180000,
+                            "preview_url": None,
+                        }
+                    }
+                )
+            return {"items": items, "next": None if end >= total else "next"}
+
+        sp.playlist_tracks.side_effect = playlist_tracks
+
+        tracks = spotify_client.get_tracks(sp, "playlist-1")
+
+        self.assertEqual([t["id"] for t in tracks], ["track-0", "track-1", "track-2", "track-4", "track-5"])
+        self.assertTrue(any(call.kwargs.get("limit") < 100 for call in sp.playlist_tracks.mock_calls))
+        self.assertTrue(any(call.kwargs.get("offset") == 3 for call in sp.playlist_tracks.mock_calls))
+
     def test_get_tracks_reports_forbidden_playlists_cleanly(self):
         sp = MagicMock()
         sp.playlist_tracks.side_effect = Exception("HTTP status 403, code 1")
