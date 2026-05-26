@@ -1,0 +1,5 @@
+spotipy>=2.24.0
+yt-dlp>=2024.11.18
+PyQt5>=5.15.11
+mutagen>=1.47.0
+requests>=2.32.0
