@@ -48,7 +48,7 @@ def get_playlists(sp: spotipy.Spotify) -> list[dict]:
                 playlists.append({
                     "id": item["id"],
                     "name": item["name"],
-                    "total": item["tracks"]["total"],
+                    "total": item.get("tracks", {}).get("total", 0),
                     "image": item["images"][0]["url"] if item.get("images") else None,
                 })
         result = sp.next(result) if result.get("next") else None

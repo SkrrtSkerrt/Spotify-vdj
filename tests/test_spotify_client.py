@@ -41,5 +41,31 @@ class SpotifyClientRedirectUriTests(unittest.TestCase):
         spotify_mock.assert_called_once_with(auth_manager=auth)
 
 
+class SpotifyClientPlaylistTests(unittest.TestCase):
+    def test_get_playlists_handles_missing_tracks_field(self):
+        sp = MagicMock()
+        sp.current_user_playlists.return_value = {
+            "items": [
+                {
+                    "id": "abc",
+                    "name": "My Playlist",
+                    "images": [{"url": "https://example.com/cover.jpg"}],
+                }
+            ],
+            "next": None,
+        }
+
+        playlists = spotify_client.get_playlists(sp)
+
+        self.assertEqual(playlists, [
+            {
+                "id": "abc",
+                "name": "My Playlist",
+                "total": 0,
+                "image": "https://example.com/cover.jpg",
+            }
+        ])
+
+
 if __name__ == "__main__":
     unittest.main()
