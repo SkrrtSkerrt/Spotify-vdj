@@ -10,6 +10,7 @@ class DownloadJob:
     output_folder: str
     on_progress: Callable
     on_done: Callable
+    source_url: str | None = None
     handle: downloader.DownloadHandle | None = field(default=None, init=False)
 
     @property
@@ -108,4 +109,5 @@ class DownloadManager:
                 job.output_folder,
                 on_progress=job.on_progress,
                 on_done=_wrap_done(job.track_id, job.on_done),
+                source_url=job.source_url,
             )

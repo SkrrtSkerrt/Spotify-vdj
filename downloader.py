@@ -226,6 +226,7 @@ def download_track(
     output_folder: str,
     on_progress: Callable[[str, float], None] | None = None,
     on_done: Callable[[str, bool, str], None] | None = None,
+    source_url: str | None = None,
 ) -> DownloadHandle:
     """Start download in a background thread. Returns a DownloadHandle for cancellation."""
 
@@ -278,32 +279,38 @@ def download_track(
         try:
             last_error: Exception | None = None
             last_url: str | None = None
-            for query in _search_queries(track):
-                candidates = _candidate_urls(track, _search_candidates_for_query(query))
-                if not candidates:
-                    continue
+            url_candidates = [source_url] if source_url else []
+            if not url_candidates:
+                for query in _search_queries(track):
+                    candidates = _candidate_urls(track, _search_candidates_for_query(query))
+                    if candidates:
+                        url_candidates.extend(candidates)
 
-                for url in candidates:
-                    last_url = url
-                    try:
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                            ydl.download([url])
-                        out_path = _expected_filename(track, output_folder)
-                        if on_done:
-                            on_done(track["id"], True, out_path)
-                        return
-                    except yt_dlp.utils.DownloadCancelled:
-                        if on_done:
-                            on_done(track["id"], False, "Cancelled")
-                        return
-                    except Exception as e:
-                        msg = str(e)
-                        last_error = e
-                        if _is_retryable_source_error(msg):
-                            continue
+            for url in url_candidates:
+                last_url = url
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([url])
+                    out_path = _expected_filename(track, output_folder)
+                    if on_done:
+                        on_done(track["id"], True, out_path)
+                    return
+                except yt_dlp.utils.DownloadCancelled:
+                    if on_done:
+                        on_done(track["id"], False, "Cancelled")
+                    return
+                except Exception as e:
+                    msg = str(e)
+                    last_error = e
+                    if source_url:
                         if on_done:
                             on_done(track["id"], False, format_download_error(e, track, source_url=url))
                         return
+                    if _is_retryable_source_error(msg):
+                        continue
+                    if on_done:
+                        on_done(track["id"], False, format_download_error(e, track, source_url=url))
+                    return
 
             if on_done:
                 if last_error is None:

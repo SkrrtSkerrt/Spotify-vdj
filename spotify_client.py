@@ -64,9 +64,15 @@ def _playlist_access_error(error: Exception, playlist_id: str) -> RuntimeError:
 
 
 def _build_track_entry(track: dict, playlist_id: str, index: int) -> dict:
-    artists = ", ".join(a["name"] for a in track.get("artists", []))
-    album = track.get("album", {})
-    image = album.get("images", [{}])[0].get("url") if album.get("images") else None
+    artists = ", ".join(
+        a.get("name", "") for a in (track.get("artists") or [])
+        if isinstance(a, dict) and a.get("name")
+    )
+    album = track.get("album") or {}
+    if not isinstance(album, dict):
+        album = {}
+    images = album.get("images") or []
+    image = images[0].get("url") if images and isinstance(images[0], dict) else None
     track_id = track.get("id") or track.get("uri") or f"{playlist_id}:{index}"
     return {
         "id": track_id,
@@ -80,19 +86,43 @@ def _build_track_entry(track: dict, playlist_id: str, index: int) -> dict:
     }
 
 
+def _playlist_list_error(error: Exception) -> RuntimeError:
+    details = str(error).strip() or error.__class__.__name__
+    lowered = details.lower()
+    if "401" in lowered or "unauthorized" in lowered or "invalid token" in lowered:
+        return RuntimeError(
+            "Spotify authentication failed while loading playlists. "
+            "Please re-check your Client ID, Client Secret, and redirect URI, then sign in again."
+        )
+    if "403" in lowered or "forbidden" in lowered:
+        return RuntimeError(
+            "Spotify refused access while loading playlists (HTTP 403). "
+            "The account may not have permission to read one or more playlists, or Spotify may be rate-limiting the request."
+        )
+    if "timeout" in lowered or "timed out" in lowered or "connection" in lowered or "network" in lowered:
+        return RuntimeError(
+            "Spotify playlists could not be loaded because the network request failed or timed out. "
+            "Check your internet connection and try again."
+        )
+    return RuntimeError(details)
+
+
 def get_playlists(sp: spotipy.Spotify) -> list[dict]:
     playlists = []
-    result = sp.current_user_playlists(limit=50)
-    while result:
-        for item in result["items"]:
-            if item:
-                playlists.append({
-                    "id": item["id"],
-                    "name": item["name"],
-                    "total": _playlist_total(sp, item["id"], item),
-                    "image": item["images"][0]["url"] if item.get("images") else None,
-                })
-        result = sp.next(result) if result.get("next") else None
+    try:
+        result = sp.current_user_playlists(limit=50)
+        while result:
+            for item in result["items"]:
+                if item:
+                    playlists.append({
+                        "id": item["id"],
+                        "name": item["name"],
+                        "total": _playlist_total(sp, item["id"], item),
+                        "image": item["images"][0]["url"] if item.get("images") else None,
+                    })
+            result = sp.next(result) if result.get("next") else None
+    except Exception as e:
+        raise _playlist_list_error(e) from e
     return playlists
 
 

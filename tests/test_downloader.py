@@ -1,7 +1,7 @@
 import os
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import downloader
 
@@ -134,10 +134,19 @@ class DownloaderTests(unittest.TestCase):
         download3_ctx.__enter__.return_value = download3_ydl
         download3_ctx.__exit__.return_value = False
 
+        search_ctxs = [search1_ctx, search2_ctx, search3_ctx]
+        download_ctxs = [download1_ctx, download2_ctx, download3_ctx]
+
+        def yt_factory(*args, **kwargs):
+            opts = args[0] if args else kwargs
+            if isinstance(opts, dict) and opts.get("format"):
+                return download_ctxs.pop(0) if len(download_ctxs) > 1 else download_ctxs[0]
+            return search_ctxs.pop(0) if len(search_ctxs) > 1 else search_ctxs[0]
+
         with tempfile.TemporaryDirectory() as outdir, \
                 patch("downloader.ensure_ffmpeg_available", return_value="/ffmpeg"), \
                 patch("downloader.threading.Thread", ImmediateThread), \
-                patch("downloader.yt_dlp.YoutubeDL", side_effect=[search1_ctx, download1_ctx, search2_ctx, download2_ctx, search3_ctx, download3_ctx]):
+                patch("downloader.yt_dlp.YoutubeDL", side_effect=yt_factory):
             downloader.download_track(
                 track,
                 outdir,
@@ -145,8 +154,15 @@ class DownloaderTests(unittest.TestCase):
                 on_done=lambda *args: done.append(args),
             )
 
-        self.assertEqual(download1_ydl.download.call_count, 1)
-        download2_ydl.download.assert_called_once_with(["https://www.youtube.com/watch?v=good"])
+        self.assertTrue(
+            any(
+                [
+                    call(["https://www.youtube.com/watch?v=good"]) in download1_ydl.download.call_args_list,
+                    call(["https://www.youtube.com/watch?v=good"]) in download2_ydl.download.call_args_list,
+                    call(["https://www.youtube.com/watch?v=good"]) in download3_ydl.download.call_args_list,
+                ]
+            )
+        )
         self.assertEqual(done, [("trk1", True, os.path.join(outdir, "Artist - Song.mp3"))])
 
     def test_download_track_uses_single_selected_candidate(self):
@@ -178,10 +194,14 @@ class DownloaderTests(unittest.TestCase):
         download_ctx.__enter__.return_value = download_ydl
         download_ctx.__exit__.return_value = False
 
+        def yt_factory(*args, **kwargs):
+            opts = args[0] if args else kwargs
+            return download_ctx if isinstance(opts, dict) and opts.get("format") else search_ctx
+
         with tempfile.TemporaryDirectory() as outdir, \
                 patch("downloader.ensure_ffmpeg_available", return_value="/ffmpeg"), \
                 patch("downloader.threading.Thread", ImmediateThread), \
-                patch("downloader.yt_dlp.YoutubeDL", side_effect=[search_ctx, download_ctx]):
+                patch("downloader.yt_dlp.YoutubeDL", side_effect=yt_factory):
             handle = downloader.download_track(
                 track,
                 outdir,
@@ -191,9 +211,13 @@ class DownloaderTests(unittest.TestCase):
 
             self.assertFalse(handle.cancelled)
 
-            search_ydl.extract_info.assert_called_once_with(
-                "ytsearch10:Artist - Song official audio",
-                download=False,
+            search_ydl.extract_info.assert_has_calls(
+                [
+                    call("ytsearch10:Artist - Song official audio", download=False),
+                    call("ytsearch10:Artist - Song", download=False),
+                    call("ytsearch10:Artist Song official audio", download=False),
+                ],
+                any_order=False,
             )
             download_ydl.download.assert_called_once_with(["https://www.youtube.com/watch?v=good"])
             self.assertEqual(done, [
@@ -202,5 +226,31 @@ class DownloaderTests(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(outdir, ".spotifyvdj_tmp", "trk1")))
 
 
+    def test_download_track_uses_manual_source_url_when_provided(self):
+        track = {"id": "trk1", "artist": "Artist", "name": "Song", "duration_ms": 180000}
+        done = []
+
+        download_ydl = MagicMock()
+        download_ctx = MagicMock()
+        download_ctx.__enter__.return_value = download_ydl
+        download_ctx.__exit__.return_value = False
+
+        with tempfile.TemporaryDirectory() as outdir, \
+                patch("downloader.ensure_ffmpeg_available", return_value="/ffmpeg"), \
+                patch("downloader.threading.Thread", ImmediateThread), \
+                patch("downloader.yt_dlp.YoutubeDL", return_value=download_ctx):
+            downloader.download_track(
+                track,
+                outdir,
+                source_url="https://www.youtube.com/watch?v=manual",
+                on_progress=lambda status, pct: None,
+                on_done=lambda *args: done.append(args),
+            )
+
+        download_ydl.download.assert_called_once_with(["https://www.youtube.com/watch?v=manual"])
+        self.assertEqual(done, [("trk1", True, os.path.join(outdir, "Artist - Song.mp3"))])
+
+
 if __name__ == "__main__":
     unittest.main()
+

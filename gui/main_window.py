@@ -37,6 +37,22 @@ class TrackState:
     LOCAL = "local"
 
 
+class PlaylistsLoader(QObject):
+    finished = pyqtSignal(list)
+    error = pyqtSignal(str)
+
+    def __init__(self, sp):
+        super().__init__()
+        self.sp = sp
+
+    def run(self):
+        try:
+            playlists = sc.get_playlists(self.sp)
+            self.finished.emit(playlists)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class PlaylistLoader(QObject):
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
@@ -75,6 +91,8 @@ class MainWindow(QMainWindow):
         self._watch_timer = QTimer(self)
         self._watch_timer.timeout.connect(self._rescan_output_folder)
         self._configure_folder_watch_timer()
+        self._playlist_loader_thread = None
+        self._playlist_loader = None
 
         self._progress_signal.connect(self._on_progress)
         self._done_signal.connect(self._on_done)
@@ -148,6 +166,7 @@ class MainWindow(QMainWindow):
 
         self.playlist_list = QListWidget()
         self.playlist_list.currentRowChanged.connect(self._on_playlist_selected)
+        self.playlist_list.itemClicked.connect(lambda item: self._on_playlist_selected(self.playlist_list.row(item)))
         left_layout.addWidget(self.playlist_list)
         splitter.addWidget(left)
 
@@ -237,6 +256,7 @@ class MainWindow(QMainWindow):
         self.queue_panel.setMinimumHeight(120)
         self.queue_panel.priority_requested.connect(self._on_priority_requested)
         self.queue_panel.retry_requested.connect(self._retry_track)
+        self.queue_panel.manual_url_requested.connect(self._apply_manual_url)
         self._queue_dock.setWidget(self.queue_panel)
         self.addDockWidget(Qt.BottomDockWidgetArea, self._queue_dock)
         self._queue_dock.visibilityChanged.connect(
@@ -249,13 +269,35 @@ class MainWindow(QMainWindow):
     # ── Playlists ─────────────────────────────────────────────────────────────
 
     def _load_playlists(self):
+        self.playlist_list.setEnabled(False)
         self.playlist_list.clear()
+        loading_item = QListWidgetItem("Loading playlists…")
+        loading_item.setFlags(Qt.ItemIsEnabled)
+        self.playlist_list.addItem(loading_item)
+        self.playlist_title.setText("Loading playlists…")
+        self.track_table.setRowCount(0)
+        self.download_all_btn.setEnabled(False)
+        self.download_selected_btn.setEnabled(False)
+        self.retry_failed_btn.setEnabled(False)
+        self.find_manual_btn.setEnabled(False)
+        self.open_file_btn.setEnabled(False)
+        self.export_failed_btn.setEnabled(False)
         self.status_bar.showMessage("Loading playlists…")
-        try:
-            self.playlists = sc.get_playlists(self.sp)
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load playlists: {e}")
-            return
+
+        self._playlist_loader_thread = QThread()
+        self._playlist_loader = PlaylistsLoader(self.sp)
+        self._playlist_loader.moveToThread(self._playlist_loader_thread)
+        self._playlist_loader_thread.started.connect(self._playlist_loader.run)
+        self._playlist_loader.finished.connect(self._on_playlists_loaded)
+        self._playlist_loader.error.connect(self._on_playlists_load_error)
+        self._playlist_loader.finished.connect(self._playlist_loader_thread.quit)
+        self._playlist_loader.error.connect(self._playlist_loader_thread.quit)
+        self._playlist_loader_thread.start()
+
+    def _on_playlists_loaded(self, playlists: list[dict]):
+        self.playlists = playlists
+        self.playlist_list.setEnabled(True)
+        self.playlist_list.clear()
 
         liked_item = QListWidgetItem("♥ Liked Songs")
         liked_item.setData(Qt.UserRole, "__liked__")
@@ -267,12 +309,34 @@ class MainWindow(QMainWindow):
             self.playlist_list.addItem(item)
 
         self.status_bar.showMessage(f"Loaded {len(self.playlists)} playlists")
+        if self.playlist_list.count() > 0 and self.playlist_list.currentRow() < 0:
+            self.playlist_list.setCurrentRow(0)
+
+    def _on_playlists_load_error(self, error: str):
+        self.playlists = []
+        self.playlist_list.setEnabled(True)
+        self.playlist_list.clear()
+        error_item = QListWidgetItem("Failed to load playlists")
+        error_item.setFlags(Qt.ItemIsEnabled)
+        error_item.setToolTip(error)
+        self.playlist_list.addItem(error_item)
+        self.playlist_title.setText("Playlists unavailable")
+        self.status_bar.showMessage(f"Playlist load failed: {error}")
+        QMessageBox.warning(
+            self,
+            "Playlist load failed",
+            "We couldn't load your Spotify playlists.\n\n"
+            f"Reason: {error}\n\n"
+            "Check that Spotify is signed in, the network is available, and the app has permission to read playlists.",
+        )
 
     def _on_playlist_selected(self, row: int):
         if row < 0:
             return
         item = self.playlist_list.item(row)
         playlist_id = item.data(Qt.UserRole)
+        if not playlist_id:
+            return
         self.playlist_title.setText(item.text())
         self.track_table.setRowCount(0)
         self.tracks = []
@@ -289,7 +353,7 @@ class MainWindow(QMainWindow):
         self._loader.moveToThread(self._loader_thread)
         self._loader_thread.started.connect(self._loader.run)
         self._loader.finished.connect(self._on_tracks_loaded)
-        self._loader.error.connect(lambda e: self.status_bar.showMessage(f"Error: {e}"))
+        self._loader.error.connect(self._on_tracks_load_error)
         self._loader.finished.connect(self._loader_thread.quit)
         self._loader.error.connect(self._loader_thread.quit)
         self._loader_thread.start()
@@ -335,6 +399,10 @@ class MainWindow(QMainWindow):
         pending = sum(1 for s in self.track_states.values() if s == TrackState.PENDING)
         self.status_bar.showMessage(f"{len(tracks)} tracks  ·  {pending} not yet downloaded")
         self._refresh_action_buttons()
+
+    def _on_tracks_load_error(self, error: str):
+        self.status_bar.showMessage(f"Error: {error}")
+        QMessageBox.warning(self, "Playlist load failed", f"Could not load tracks for this playlist:\n\n{error}")
 
     # ── Downloads ─────────────────────────────────────────────────────────────
 
@@ -397,6 +465,22 @@ class MainWindow(QMainWindow):
             if track["id"] == track_id:
                 if self.track_states.get(track_id) in (TrackState.ERROR, TrackState.CANCELLED):
                     self._start_downloads([track])
+                return
+
+    def _apply_manual_url(self, track_id: str, url: str):
+        url = (url or "").strip()
+        if not url:
+            QMessageBox.information(self, "Missing URL", "Paste a YouTube URL first.")
+            return
+        for track in self.tracks:
+            if track["id"] == track_id:
+                if track.get("is_local"):
+                    QMessageBox.information(self, "Local track", "Spotify local files cannot be downloaded from a pasted YouTube URL.")
+                    return
+                if self.track_states.get(track_id) not in (TrackState.ERROR, TrackState.CANCELLED):
+                    QMessageBox.information(self, "Not a failed track", "Use the manual URL option on a failed track.")
+                    return
+                self._start_downloads([track], source_url=url)
                 return
 
     def _find_selected_manually(self, *_):
@@ -527,7 +611,7 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Rescanned output folder: {available}/{len(self.tracks)} available, {pending} pending")
 
 
-    def _start_downloads(self, tracks: list[dict]):
+    def _start_downloads(self, tracks: list[dict], source_url: str | None = None):
         output_folder = self.cfg.get("output_folder", "")
         if not output_folder:
             QMessageBox.warning(self, "No Folder", "Please set an output folder in Settings.")
@@ -569,6 +653,7 @@ class MainWindow(QMainWindow):
                 output_folder=output_folder,
                 on_progress=self._make_progress_cb(track["id"]),
                 on_done=self._make_done_cb(track["id"]),
+                source_url=source_url if len(tracks) == 1 else None,
             )
             self._dl_manager.enqueue(job)
             # cancel_fn wired after enqueue so handle exists

@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Callable
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QScrollArea, QProgressBar, QFrame
 )
 from PyQt5.QtCore import Qt, pyqtSignal
@@ -23,12 +23,13 @@ class QueueRow(QFrame):
     cancelled = pyqtSignal(str)    # track_id
     prioritized = pyqtSignal(str)  # track_id
     retry_requested = pyqtSignal(str)  # track_id
+    manual_url_requested = pyqtSignal(str, str)  # track_id, url
 
     def __init__(self, entry: QueueEntry, parent=None):
         super().__init__(parent)
         self.track_id = entry.track_id
         self.setFrameShape(QFrame.StyledPanel)
-        self.setMaximumHeight(64)
+        self.setMaximumHeight(92)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -73,6 +74,20 @@ class QueueRow(QFrame):
         self._retry_btn.clicked.connect(lambda: self.retry_requested.emit(self.track_id))
         layout.addWidget(self._retry_btn)
 
+        self._url_edit = QLineEdit()
+        self._url_edit.setPlaceholderText("Paste YouTube URL")
+        self._url_edit.setClearButtonEnabled(True)
+        self._url_edit.setVisible(False)
+        self._url_edit.setMinimumWidth(180)
+        layout.addWidget(self._url_edit, stretch=1)
+
+        self._use_url_btn = QPushButton("Use URL")
+        self._use_url_btn.setFixedSize(64, 24)
+        self._use_url_btn.setToolTip("Download from a pasted YouTube link")
+        self._use_url_btn.clicked.connect(self._emit_manual_url)
+        self._use_url_btn.setVisible(False)
+        layout.addWidget(self._use_url_btn)
+
         self._cancel_btn = QPushButton("✕")
         self._cancel_btn.setFixedSize(24, 24)
         self._cancel_btn.setToolTip("Cancel download")
@@ -87,6 +102,11 @@ class QueueRow(QFrame):
     def mark_next(self, is_next: bool):
         self._next_badge.setVisible(is_next)
 
+    def _emit_manual_url(self):
+        url = self._url_edit.text().strip()
+        if url:
+            self.manual_url_requested.emit(self.track_id, url)
+
     def _apply_status(self, status: str, progress: float):
         display = status.splitlines()[0]
         self._subtitle.setText(display)
@@ -99,6 +119,8 @@ class QueueRow(QFrame):
 
         self._priority_btn.setVisible(queued)
         self._retry_btn.setVisible(failed)
+        self._url_edit.setVisible(failed)
+        self._use_url_btn.setVisible(failed)
         self._cancel_btn.setEnabled(not done and not failed)
         self._cancel_btn.setText("✓" if done else "✕")
 
@@ -116,6 +138,7 @@ class QueuePanel(QWidget):
 
     priority_requested = pyqtSignal(str)  # track_id — connect to DownloadManager.prioritize
     retry_requested = pyqtSignal(str)     # track_id — connect to MainWindow._retry_track
+    manual_url_requested = pyqtSignal(str, str)  # track_id, url
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -187,6 +210,7 @@ class QueuePanel(QWidget):
         row.cancelled.connect(self._on_cancel)
         row.prioritized.connect(self._on_prioritize)
         row.retry_requested.connect(self._on_retry)
+        row.manual_url_requested.connect(self.manual_url_requested.emit)
         self._rows[entry.track_id] = row
         self._row_order.append(entry.track_id)
         # Insert before trailing stretch

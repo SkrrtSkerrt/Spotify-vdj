@@ -68,6 +68,16 @@ class SpotifyClientPlaylistTests(unittest.TestCase):
         ])
         sp.playlist.assert_called_once_with("abc", fields="tracks.total")
 
+    def test_get_playlists_network_errors_are_user_friendly(self):
+        sp = MagicMock()
+        sp.current_user_playlists.side_effect = TimeoutError("request timed out")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            spotify_client.get_playlists(sp)
+
+        self.assertIn("timed out", str(ctx.exception).lower())
+        self.assertIn("network", str(ctx.exception).lower())
+
     def test_get_tracks_keeps_local_playlist_items(self):
         sp = MagicMock()
         sp.playlist_tracks.return_value = {
@@ -95,6 +105,31 @@ class SpotifyClientPlaylistTests(unittest.TestCase):
         self.assertTrue(tracks[0]["is_local"])
         self.assertEqual(tracks[0]["name"], "My Local Track")
         self.assertEqual(tracks[0]["artist"], "Local Artist")
+
+    def test_get_tracks_handles_missing_album_and_artist_metadata(self):
+        sp = MagicMock()
+        sp.playlist_tracks.return_value = {
+            "items": [
+                {
+                    "track": {
+                        "id": "abc",
+                        "uri": "spotify:track:abc",
+                        "name": "Mystery Track",
+                        "artists": None,
+                        "album": None,
+                        "duration_ms": 90000,
+                        "preview_url": None,
+                    }
+                }
+            ],
+            "next": None,
+        }
+
+        tracks = spotify_client.get_tracks(sp, "playlist-2")
+
+        self.assertEqual(tracks[0]["id"], "abc")
+        self.assertEqual(tracks[0]["artist"], "")
+        self.assertEqual(tracks[0]["album"], "")
 
     def test_get_tracks_reports_forbidden_playlists_cleanly(self):
         sp = MagicMock()
