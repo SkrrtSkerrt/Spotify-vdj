@@ -107,6 +107,71 @@ def _build_track_entry(track: dict, playlist_id: str, index: int) -> dict:
     }
 
 
+def _playlist_row_track(row: dict) -> dict | None:
+    if not isinstance(row, dict):
+        return None
+
+    track = row.get("track")
+    if isinstance(track, dict):
+        return track
+
+    item = row.get("item")
+    if isinstance(item, dict) and item.get("type") == "track":
+        return item
+
+    return None
+
+
+def _fetch_playlist_tracks_page(
+    sp: spotipy.Spotify,
+    playlist_id: str,
+    seen: set[str],
+    page: dict | None = None,
+) -> list[dict]:
+    if page is None:
+        market = None
+        try:
+            profile = sp.me()
+            if isinstance(profile, dict):
+                market = profile.get("country")
+        except Exception:
+            pass
+
+        playlist = sp.playlist(
+            playlist_id,
+            additional_types=("track",),
+            market=market,
+        )
+        page = playlist.get("tracks") or playlist.get("items") or {}
+
+    if not isinstance(page, dict):
+        return []
+
+    tracks = []
+    index = 0
+    while page:
+        items = page.get("items") or []
+        for row in items:
+            track = _playlist_row_track(row)
+            if track is None:
+                index += 1
+                continue
+            entry = _build_track_entry(track, playlist_id, index)
+            if entry["id"] not in seen:
+                tracks.append(entry)
+                seen.add(entry["id"])
+            index += 1
+
+        if not page.get("next"):
+            break
+
+        page = sp.next(page)
+        if page is None:
+            break
+
+    return tracks
+
+
 def _fetch_playlist_tracks_range(
     sp: spotipy.Spotify,
     playlist_id: str,
@@ -126,10 +191,11 @@ def _fetch_playlist_tracks_range(
         tracks = []
         index = offset
         for item in items:
-            if not item or not item.get("track"):
+            track = _playlist_row_track(item)
+            if track is None:
                 index += 1
                 continue
-            entry = _build_track_entry(item["track"], playlist_id, index)
+            entry = _build_track_entry(track, playlist_id, index)
             if entry["id"] not in seen:
                 tracks.append(entry)
                 seen.add(entry["id"])
@@ -180,8 +246,22 @@ def get_playlists(sp: spotipy.Spotify) -> list[dict]:
 
 def get_tracks(sp: spotipy.Spotify, playlist_id: str) -> list[dict]:
     try:
-        return _fetch_playlist_tracks_range(sp, playlist_id, 0, 100)
+        tracks = _fetch_playlist_tracks_range(sp, playlist_id, 0, 100)
+        if tracks:
+            return tracks
+
+        fallback_tracks = _fetch_playlist_tracks_page(sp, playlist_id, set())
+        if fallback_tracks:
+            return fallback_tracks
+
+        return tracks
     except Exception as e:
+        try:
+            fallback_tracks = _fetch_playlist_tracks_page(sp, playlist_id, set())
+            if fallback_tracks:
+                return fallback_tracks
+        except Exception:
+            pass
         raise _playlist_access_error(e, playlist_id) from e
 
 

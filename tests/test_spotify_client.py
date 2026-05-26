@@ -244,6 +244,39 @@ class SpotifyClientPlaylistTests(unittest.TestCase):
         self.assertIn("403", str(ctx.exception))
         self.assertIn("removed", str(ctx.exception).lower())
 
+    def test_get_tracks_falls_back_to_playlist_endpoint_item_rows(self):
+        sp = MagicMock()
+        sp.playlist_tracks.return_value = {"items": [], "next": None}
+        sp.me.return_value = {"country": "US"}
+        sp.playlist.return_value = {
+            "tracks": {
+                "items": [
+                    {
+                        "item": {
+                            "type": "track",
+                            "id": "abc",
+                            "uri": "spotify:track:abc",
+                            "name": "Fallback Track",
+                            "artists": [{"name": "Artist"}],
+                            "album": {"name": "Album", "images": []},
+                            "duration_ms": 210000,
+                            "preview_url": None,
+                        }
+                    }
+                ],
+                "next": None,
+            }
+        }
+
+        tracks = spotify_client.get_tracks(sp, "playlist-1")
+
+        self.assertEqual([t["id"] for t in tracks], ["abc"])
+        sp.playlist.assert_called_once_with(
+            "playlist-1",
+            additional_types=("track",),
+            market="US",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
