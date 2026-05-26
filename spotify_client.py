@@ -39,6 +39,19 @@ def create_client(client_id: str, client_secret: str, redirect_uri: str) -> spot
     return spotipy.Spotify(auth_manager=auth)
 
 
+def _playlist_total(sp: spotipy.Spotify, playlist_id: str, item: dict) -> int:
+    tracks = item.get("tracks") or {}
+    total = tracks.get("total")
+    if isinstance(total, int) and total > 0:
+        return total
+
+    try:
+        full = sp.playlist(playlist_id, fields="tracks.total")
+        return full.get("tracks", {}).get("total", total or 0)
+    except Exception:
+        return total or 0
+
+
 def get_playlists(sp: spotipy.Spotify) -> list[dict]:
     playlists = []
     result = sp.current_user_playlists(limit=50)
@@ -48,7 +61,7 @@ def get_playlists(sp: spotipy.Spotify) -> list[dict]:
                 playlists.append({
                     "id": item["id"],
                     "name": item["name"],
-                    "total": item.get("tracks", {}).get("total", 0),
+                    "total": _playlist_total(sp, item["id"], item),
                     "image": item["images"][0]["url"] if item.get("images") else None,
                 })
         result = sp.next(result) if result.get("next") else None

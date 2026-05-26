@@ -42,7 +42,7 @@ class SpotifyClientRedirectUriTests(unittest.TestCase):
 
 
 class SpotifyClientPlaylistTests(unittest.TestCase):
-    def test_get_playlists_handles_missing_tracks_field(self):
+    def test_get_playlists_uses_playlist_total_fallback(self):
         sp = MagicMock()
         sp.current_user_playlists.return_value = {
             "items": [
@@ -54,6 +54,7 @@ class SpotifyClientPlaylistTests(unittest.TestCase):
             ],
             "next": None,
         }
+        sp.playlist.return_value = {"tracks": {"total": 17}}
 
         playlists = spotify_client.get_playlists(sp)
 
@@ -61,10 +62,11 @@ class SpotifyClientPlaylistTests(unittest.TestCase):
             {
                 "id": "abc",
                 "name": "My Playlist",
-                "total": 0,
+                "total": 17,
                 "image": "https://example.com/cover.jpg",
             }
         ])
+        sp.playlist.assert_called_once_with("abc", fields="tracks.total")
 
 
 if __name__ == "__main__":
