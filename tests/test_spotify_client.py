@@ -38,7 +38,13 @@ class SpotifyClientRedirectUriTests(unittest.TestCase):
 
         self.assertIs(result, sp_instance)
         oauth_mock.assert_called_once()
-        spotify_mock.assert_called_once_with(auth_manager=auth)
+        spotify_mock.assert_called_once_with(
+            auth_manager=auth,
+            requests_timeout=10,
+            retries=2,
+            status_retries=0,
+            backoff_factor=0.2,
+        )
 
 
 class SpotifyClientPlaylistTests(unittest.TestCase):
@@ -107,8 +113,17 @@ class SpotifyClientPlaylistTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             spotify_client.get_playlists(sp)
 
-        self.assertIn("timed out", str(ctx.exception).lower())
-        self.assertIn("network", str(ctx.exception).lower())
+        self.assertIn("network request failed", str(ctx.exception))
+
+    def test_get_playlists_rate_limit_is_user_friendly(self):
+        sp = MagicMock()
+        sp.current_user_playlists.side_effect = Exception("HTTP 429 Too Many Requests")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            spotify_client.get_playlists(sp)
+
+        self.assertIn("rate-limiting", str(ctx.exception))
+
 
     def test_get_tracks_keeps_local_playlist_items(self):
         sp = MagicMock()

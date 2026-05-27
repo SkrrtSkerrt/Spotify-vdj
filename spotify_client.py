@@ -36,7 +36,13 @@ def create_client(client_id: str, client_secret: str, redirect_uri: str) -> spot
         open_browser=True,
         cache_path=".spotify_token_cache",
     )
-    return spotipy.Spotify(auth_manager=auth)
+    return spotipy.Spotify(
+        auth_manager=auth,
+        requests_timeout=10,
+        retries=2,
+        status_retries=0,
+        backoff_factor=0.2,
+    )
 
 
 def _best_image_url(images: list[dict] | None) -> str | None:
@@ -96,10 +102,15 @@ def _playlist_list_error(error: Exception) -> RuntimeError:
             "Spotify authentication failed while loading playlists. "
             "Please re-check your Client ID, Client Secret, and redirect URI, then sign in again."
         )
+    if "429" in lowered or "too many requests" in lowered or "rate limit" in lowered:
+        return RuntimeError(
+            "Spotify is rate-limiting playlist loading (HTTP 429). "
+            "Please wait a few minutes and try again, or reopen the app later."
+        )
     if "403" in lowered or "forbidden" in lowered:
         return RuntimeError(
             "Spotify refused access while loading playlists (HTTP 403). "
-            "The account may not have permission to read one or more playlists, or Spotify may be rate-limiting the request."
+            "The account may not have permission to read one or more playlists."
         )
     if "timeout" in lowered or "timed out" in lowered or "connection" in lowered or "network" in lowered:
         return RuntimeError(
