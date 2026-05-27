@@ -64,6 +64,9 @@ class SpotifyClientPlaylistTests(unittest.TestCase):
                 "name": "My Playlist",
                 "total": 17,
                 "image": "https://example.com/cover.jpg",
+                "description": "",
+                "owner_name": "",
+                "public": None,
             }
         ])
         sp.playlist.assert_not_called()
@@ -90,6 +93,9 @@ class SpotifyClientPlaylistTests(unittest.TestCase):
                 "name": "My Playlist",
                 "total": 17,
                 "image": "https://example.com/cover.jpg",
+                "description": "",
+                "owner_name": "",
+                "public": None,
             }
         ])
         sp.playlist.assert_called_once_with("abc", fields="tracks.total")
@@ -276,6 +282,42 @@ class SpotifyClientPlaylistTests(unittest.TestCase):
             additional_types=("track",),
             market="US",
         )
+
+    def test_get_tracks_preserves_episode_rows(self):
+        sp = MagicMock()
+        sp.playlist_tracks.return_value = {
+            "items": [
+                {
+                    "item": {
+                        "type": "episode",
+                        "id": "ep1",
+                        "uri": "spotify:episode:ep1",
+                        "name": "Episode 1",
+                        "show": {
+                            "name": "Podcast Show",
+                            "publisher": "Podcast Network",
+                            "images": [{"url": "https://example.com/podcast.jpg", "width": 640, "height": 640}],
+                        },
+                        "duration_ms": 420000,
+                        "preview_url": "https://example.com/preview.mp3",
+                        "is_local": False,
+                    }
+                }
+            ],
+            "next": None,
+        }
+
+        tracks = spotify_client.get_tracks(sp, "playlist-ep")
+
+        self.assertEqual(len(tracks), 1)
+        self.assertEqual(tracks[0]["media_type"], "episode")
+        self.assertFalse(tracks[0]["downloadable"])
+        self.assertEqual(tracks[0]["name"], "Episode 1")
+        self.assertEqual(tracks[0]["artist"], "Podcast Show")
+        self.assertEqual(tracks[0]["album"], "Podcast Show")
+        self.assertEqual(tracks[0]["image"], "https://example.com/podcast.jpg")
+        self.assertEqual(tracks[0]["playlist_position"], 1)
+        self.assertIn("not downloadable", tracks[0]["unsupported_reason"].lower())
 
 
 if __name__ == "__main__":

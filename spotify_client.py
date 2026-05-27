@@ -39,6 +39,31 @@ def create_client(client_id: str, client_secret: str, redirect_uri: str) -> spot
     return spotipy.Spotify(auth_manager=auth)
 
 
+def _best_image_url(images: list[dict] | None) -> str | None:
+    if not images:
+        return None
+
+    best_url = None
+    best_area = -1
+    for image in images:
+        if not isinstance(image, dict):
+            continue
+        url = image.get("url")
+        if not url:
+            continue
+        width = image.get("width")
+        height = image.get("height")
+        if isinstance(width, int) and isinstance(height, int):
+            area = width * height
+        else:
+            area = 0
+        if area > best_area:
+            best_area = area
+            best_url = url
+
+    return best_url
+
+
 def _playlist_total(sp: spotipy.Spotify, playlist_id: str, item: dict) -> int:
     candidates = []
 
@@ -93,9 +118,12 @@ def _build_track_entry(track: dict, playlist_id: str, index: int) -> dict:
     if not isinstance(album, dict):
         album = {}
     images = album.get("images") or []
-    image = images[0].get("url") if images and isinstance(images[0], dict) else None
+    image = _best_image_url(images)
     track_id = track.get("id") or track.get("uri") or f"{playlist_id}:{index}"
-    return {
+    media_type = track.get("type") or "track"
+    is_local = bool(track.get("is_local"))
+    downloadable = media_type == "track" and not is_local and track.get("duration_ms", 0) > 0
+    entry = {
         "id": track_id,
         "name": track.get("name", ""),
         "artist": artists,
@@ -103,21 +131,55 @@ def _build_track_entry(track: dict, playlist_id: str, index: int) -> dict:
         "duration_ms": track.get("duration_ms", 0),
         "image": image,
         "preview_url": track.get("preview_url"),
-        "is_local": bool(track.get("is_local")),
+        "is_local": is_local,
+        "downloadable": downloadable,
+        "media_type": media_type,
+        "playlist_position": index + 1,
+        "track_number": track.get("track_number"),
+        "disc_number": track.get("disc_number"),
     }
+    if media_type != "track" or is_local:
+        entry["unsupported_reason"] = (
+            "Spotify local files cannot be downloaded." if is_local else f"Spotify {media_type} items are not downloadable."
+        )
+    return entry
 
 
-def _playlist_row_track(row: dict) -> dict | None:
+def _build_playlist_entry(row: dict, playlist_id: str, index: int) -> dict | None:
     if not isinstance(row, dict):
         return None
 
     track = row.get("track")
     if isinstance(track, dict):
-        return track
+        entry = _build_track_entry(track, playlist_id, index)
+        if not entry.get("downloadable", False):
+            entry.setdefault("unsupported_reason", "Spotify track items are not downloadable.")
+        return entry
 
     item = row.get("item")
-    if isinstance(item, dict) and item.get("type") == "track":
-        return item
+    if isinstance(item, dict):
+        if item.get("type") == "track":
+            entry = _build_track_entry(item, playlist_id, index)
+            if not entry.get("downloadable", False):
+                entry.setdefault("unsupported_reason", "Spotify track items are not downloadable.")
+            return entry
+
+        show = item.get("show") if isinstance(item.get("show"), dict) else None
+        entry = {
+            "id": item.get("id") or item.get("uri") or f"{playlist_id}:{index}",
+            "name": item.get("name", "Unavailable Spotify item"),
+            "artist": (show.get("name") or show.get("publisher") or "") if show else "",
+            "album": show.get("name", "") if show else "",
+            "duration_ms": item.get("duration_ms", 0),
+            "image": _best_image_url(show.get("images") if show else None),
+            "preview_url": item.get("preview_url"),
+            "is_local": bool(item.get("is_local")),
+            "downloadable": False,
+            "media_type": item.get("type") or "unknown",
+            "playlist_position": index + 1,
+            "unsupported_reason": f"Spotify {item.get('type', 'item')} items are not downloadable.",
+        }
+        return entry
 
     return None
 
@@ -152,11 +214,10 @@ def _fetch_playlist_tracks_page(
     while page:
         items = page.get("items") or []
         for row in items:
-            track = _playlist_row_track(row)
-            if track is None:
+            entry = _build_playlist_entry(row, playlist_id, index)
+            if entry is None:
                 index += 1
                 continue
-            entry = _build_track_entry(track, playlist_id, index)
             if entry["id"] not in seen:
                 tracks.append(entry)
                 seen.add(entry["id"])
@@ -191,11 +252,10 @@ def _fetch_playlist_tracks_range(
         tracks = []
         index = offset
         for item in items:
-            track = _playlist_row_track(item)
-            if track is None:
+            entry = _build_playlist_entry(item, playlist_id, index)
+            if entry is None:
                 index += 1
                 continue
-            entry = _build_track_entry(track, playlist_id, index)
             if entry["id"] not in seen:
                 tracks.append(entry)
                 seen.add(entry["id"])
@@ -236,7 +296,10 @@ def get_playlists(sp: spotipy.Spotify) -> list[dict]:
                         "id": item["id"],
                         "name": item["name"],
                         "total": _playlist_total(sp, item["id"], item),
-                        "image": item["images"][0]["url"] if item.get("images") else None,
+                        "image": _best_image_url(item.get("images")),
+                        "description": item.get("description", ""),
+                        "owner_name": (item.get("owner") or {}).get("display_name", ""),
+                        "public": item.get("public"),
                     })
             result = sp.next(result) if result.get("next") else None
     except Exception as e:

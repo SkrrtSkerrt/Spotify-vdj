@@ -41,6 +41,7 @@ class TrackState:
     EXISTS = "exists"
     CANCELLED = "cancelled"
     LOCAL = "local"
+    UNSUPPORTED = "unsupported"
 
 
 class PlaylistsLoader(QObject):
@@ -335,6 +336,14 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(f"{pl['name']}  ({pl['total']})")
             item.setData(Qt.UserRole, pl["id"])
             item.setData(Qt.UserRole + 1, pl.get("total"))
+            tooltip_bits = [pl.get("name", "")]
+            if pl.get("owner_name"):
+                tooltip_bits.append(f"Owner: {pl['owner_name']}")
+            if pl.get("description"):
+                tooltip_bits.append(pl["description"])
+            if pl.get("public") is not None:
+                tooltip_bits.append(f"Public: {pl['public']}")
+            item.setToolTip("\n".join(bit for bit in tooltip_bits if bit))
             self.playlist_list.addItem(item)
 
         self.status_bar.showMessage(f"Loaded {len(self.playlists)} playlists")
@@ -400,12 +409,33 @@ class MainWindow(QMainWindow):
         self.track_table.setRowCount(len(tracks))
         output_folder = self.cfg.get("output_folder", "")
 
+        unsupported_count = 0
         for i, track in enumerate(tracks):
+            downloadable = bool(track.get("downloadable", not track.get("is_local")))
+            media_type = track.get("media_type", "track")
+            track_name = track.get("name", "")
+            track_artist = track.get("artist", "")
+            track_album = track.get("album", "")
+            position = track.get("playlist_position", i + 1)
+            self.track_table.setItem(i, 0, QTableWidgetItem(str(position)))
+            self.track_table.setItem(i, 1, QTableWidgetItem(track_name))
+            self.track_table.setItem(i, 2, QTableWidgetItem(track_artist))
+            self.track_table.setItem(i, 3, QTableWidgetItem(track_album))
+            self.track_table.setItem(i, 4, QTableWidgetItem(_fmt_duration(track.get("duration_ms", 0))))
+
             if track.get("is_local"):
                 state = TrackState.LOCAL
-                status_text = "Local track"
+                status_text = "Local Spotify file"
                 status_color = "#8d6e63"
                 status_tip = "Stored locally in Spotify; it cannot be downloaded from Spotify."
+            elif not downloadable:
+                state = TrackState.UNSUPPORTED
+                status_text = "Unsupported item"
+                if media_type == "episode":
+                    status_text = "Podcast episode"
+                status_color = "#757575"
+                status_tip = track.get("unsupported_reason") or "Spotify did not return a downloadable track for this row."
+                unsupported_count += 1
             else:
                 exists = downloader.already_downloaded(track, output_folder, self._downloaded_paths)
                 state = TrackState.EXISTS if exists else TrackState.PENDING
@@ -415,36 +445,33 @@ class MainWindow(QMainWindow):
 
             self.track_states[track["id"]] = state
 
-            self.track_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
-            self.track_table.setItem(i, 1, QTableWidgetItem(track["name"]))
-            self.track_table.setItem(i, 2, QTableWidgetItem(track["artist"]))
-            self.track_table.setItem(i, 3, QTableWidgetItem(track.get("album", "")))
-            self.track_table.setItem(i, 4, QTableWidgetItem(_fmt_duration(track["duration_ms"])))
-
             status_item = QTableWidgetItem(status_text)
             if state == TrackState.EXISTS:
                 status_item.setForeground(QBrush(QColor(status_color)))
                 existing_path = downloader.find_existing_download_path(track, output_folder, self._downloaded_paths)
                 if existing_path:
                     status_item.setToolTip(f"Already in folder: {existing_path}")
-            elif state == TrackState.LOCAL:
+            elif state in (TrackState.LOCAL, TrackState.UNSUPPORTED):
                 status_item.setForeground(QBrush(QColor(status_color)))
                 status_item.setToolTip(status_tip)
             self.track_table.setItem(i, 5, status_item)
 
-        self.download_all_btn.setEnabled(True)
         pending = sum(1 for s in self.track_states.values() if s == TrackState.PENDING)
+        self.download_all_btn.setEnabled(pending > 0)
         total_hint = self._current_playlist_total
-        if isinstance(total_hint, int) and total_hint > 0 and len(tracks) < total_hint:
+        visible_count = len(tracks)
+        if isinstance(total_hint, int) and total_hint > 0 and visible_count < total_hint:
             msg = (
-                f"Spotify returned {len(tracks)} of {total_hint} tracks for this playlist. "
-                "This usually means the playlist contains local files or other items the Spotify Web API cannot return."
+                f"Spotify returned {visible_count} of {total_hint} items for this playlist. "
+                "That usually means the playlist includes local files, episodes, or other rows Spotify does not fully expose."
             )
             logger.warning(msg)
             self.status_bar.showMessage(msg)
             QMessageBox.warning(self, "Partial playlist load", msg)
+        elif unsupported_count:
+            self.status_bar.showMessage(f"{visible_count} items loaded  ·  {pending} downloadable  ·  {unsupported_count} unsupported")
         else:
-            self.status_bar.showMessage(f"{len(tracks)} tracks  ·  {pending} not yet downloaded")
+            self.status_bar.showMessage(f"{visible_count} tracks  ·  {pending} not yet downloaded")
         self._refresh_action_buttons()
 
     def _on_tracks_load_error(self, token: int, error: str):
@@ -464,9 +491,9 @@ class MainWindow(QMainWindow):
         selected_tracks = [self.tracks[r] for r in rows if r < len(self.tracks)]
         selected_states = [self.track_states.get(track["id"]) for track in selected_tracks]
 
-        has_selected_non_local = any(not track.get("is_local") for track in selected_tracks)
+        has_selected_downloadable = any(track.get("downloadable", not track.get("is_local")) for track in selected_tracks)
         has_downloadable = any(
-            not track.get("is_local") and state in (TrackState.PENDING, TrackState.ERROR, TrackState.CANCELLED)
+            track.get("downloadable", not track.get("is_local")) and state in (TrackState.PENDING, TrackState.ERROR, TrackState.CANCELLED)
             for track, state in zip(selected_tracks, selected_states)
         )
         has_failed = any(state in (TrackState.ERROR, TrackState.CANCELLED) for state in selected_states)
@@ -477,18 +504,18 @@ class MainWindow(QMainWindow):
 
         self.download_selected_btn.setEnabled(has_downloadable)
         self.retry_failed_btn.setEnabled(any_failed_in_library)
-        self.find_manual_btn.setEnabled(has_selected_non_local)
+        self.find_manual_btn.setEnabled(has_selected_downloadable)
         self.open_file_btn.setEnabled(has_existing)
         self.export_failed_btn.setEnabled(any_failed_in_library)
 
     def _download_selected(self):
         rows = set(item.row() for item in self.track_table.selectedItems())
-        tracks = [self.tracks[r] for r in rows if r < len(self.tracks) and not self.tracks[r].get("is_local")]
+        tracks = [self.tracks[r] for r in rows if r < len(self.tracks) and self.tracks[r].get("downloadable", not self.tracks[r].get("is_local"))]
         if rows and not tracks:
             QMessageBox.information(
                 self,
-                "Local tracks",
-                "The selected items are local Spotify files. They can be viewed, but Spotify does not expose them for download.",
+                "Unsupported items",
+                "The selected items are local files, podcasts, or other Spotify rows that cannot be downloaded.",
             )
             return
         self._start_downloads(tracks)
@@ -534,7 +561,7 @@ class MainWindow(QMainWindow):
                 return
 
     def _find_selected_manually(self, *_):
-        track = self._selected_track(lambda t: not t.get("is_local"))
+        track = self._selected_track(lambda t: t.get("downloadable", not t.get("is_local")))
         if not track:
             QMessageBox.information(self, "No track selected", "Select a track first.")
             return
