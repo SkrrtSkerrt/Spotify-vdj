@@ -39,7 +39,10 @@ def build_download_index(output_folder: str) -> list[str]:
         return []
 
     paths: list[str] = []
-    for root, _, files in os.walk(output_folder):
+    for root, dirs, files in os.walk(output_folder):
+        dirs[:] = [d for d in dirs if d != ".spotifyvdj_tmp"]
+        if os.path.basename(root) == ".spotifyvdj_tmp":
+            continue
         for filename in files:
             ext = os.path.splitext(filename)[1].lower()
             if ext not in AUDIO_EXTENSIONS:
@@ -54,7 +57,7 @@ def find_existing_download_path(
     known_paths: list[str] | None = None,
 ) -> str | None:
     expected = _expected_filename(track, output_folder)
-    if os.path.exists(expected):
+    if os.path.isfile(expected):
         return expected
 
     paths = known_paths if known_paths is not None else build_download_index(output_folder)
@@ -63,6 +66,10 @@ def find_existing_download_path(
 
     artist_tokens, name_tokens = _track_signature(track)
     for path in paths:
+        if os.path.basename(os.path.dirname(path)) == ".spotifyvdj_tmp":
+            continue
+        if not os.path.isfile(path):
+            continue
         tokens = _file_signature(path)
         if artist_tokens and name_tokens and artist_tokens.issubset(tokens) and name_tokens.issubset(tokens):
             return path
@@ -282,7 +289,12 @@ def download_track(
             url_candidates = [source_url] if source_url else []
             if not url_candidates:
                 for query in _search_queries(track):
-                    candidates = _candidate_urls(track, _search_candidates_for_query(query))
+                    try:
+                        entries = _search_candidates_for_query(query)
+                    except Exception as e:
+                        last_error = e
+                        continue
+                    candidates = _candidate_urls(track, entries)
                     if candidates:
                         url_candidates.extend(candidates)
 

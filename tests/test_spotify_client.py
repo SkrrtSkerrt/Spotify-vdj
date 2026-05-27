@@ -124,6 +124,21 @@ class SpotifyClientPlaylistTests(unittest.TestCase):
 
         self.assertIn("rate-limiting", str(ctx.exception))
 
+    def test_get_playlists_rate_limit_includes_retry_after_hint(self):
+        sp = MagicMock()
+        sp.current_user_playlists.side_effect = Exception("HTTP 429 Too Many Requests; Retry-After: 2213")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            spotify_client.get_playlists(sp)
+
+        self.assertIn("2213s", str(ctx.exception))
+
+    def test_extract_retry_after_seconds(self):
+        self.assertEqual(
+            spotify_client.extract_retry_after_seconds("HTTP 429 Too Many Requests; Retry-After: 2213"),
+            2213,
+        )
+        self.assertIsNone(spotify_client.extract_retry_after_seconds("HTTP 429 Too Many Requests"))
 
     def test_get_tracks_keeps_local_playlist_items(self):
         sp = MagicMock()
@@ -333,6 +348,42 @@ class SpotifyClientPlaylistTests(unittest.TestCase):
         self.assertEqual(tracks[0]["image"], "https://example.com/podcast.jpg")
         self.assertEqual(tracks[0]["playlist_position"], 1)
         self.assertIn("not downloadable", tracks[0]["unsupported_reason"].lower())
+
+    def test_get_liked_tracks_preserves_absolute_positions_across_skipped_rows(self):
+        sp = MagicMock()
+        sp.current_user_saved_tracks.return_value = {
+            "items": [
+                {
+                    "track": {
+                        "id": "t1",
+                        "uri": "spotify:track:t1",
+                        "name": "Track 1",
+                        "artists": [{"name": "Artist"}],
+                        "album": {"name": "Album", "images": []},
+                        "duration_ms": 120000,
+                        "preview_url": None,
+                    }
+                },
+                {"track": None},
+                {
+                    "track": {
+                        "id": "t2",
+                        "uri": "spotify:track:t2",
+                        "name": "Track 2",
+                        "artists": [{"name": "Artist"}],
+                        "album": {"name": "Album", "images": []},
+                        "duration_ms": 121000,
+                        "preview_url": None,
+                    }
+                },
+            ],
+            "next": {"items": [], "next": None},
+        }
+        sp.next.return_value = {"items": [], "next": None}
+
+        tracks = spotify_client.get_liked_tracks(sp)
+
+        self.assertEqual([t["playlist_position"] for t in tracks], [1, 3])
 
 
 if __name__ == "__main__":

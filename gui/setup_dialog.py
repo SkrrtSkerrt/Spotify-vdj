@@ -12,6 +12,14 @@ from resource_utils import resource_path
 DEFAULT_REDIRECT_URI = "http://127.0.0.1:8888/callback"
 
 
+def _coerce_spinbox_value(value, default: int, minimum: int, maximum: int) -> int:
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        coerced = default
+    return max(minimum, min(maximum, coerced))
+
+
 class SetupDialog(QDialog):
     def __init__(self, cfg: dict, parent=None):
         super().__init__(parent)
@@ -103,7 +111,9 @@ class SetupDialog(QDialog):
         queue_layout.addWidget(QLabel("Max concurrent downloads:"))
         self.max_concurrent_input = QSpinBox()
         self.max_concurrent_input.setRange(1, 8)
-        self.max_concurrent_input.setValue(int(self.cfg.get("max_concurrent_downloads", 2)))
+        self.max_concurrent_input.setValue(
+            _coerce_spinbox_value(self.cfg.get("max_concurrent_downloads", 2), default=2, minimum=1, maximum=8)
+        )
         queue_layout.addWidget(self.max_concurrent_input)
         queue_layout.addStretch()
         layout.addWidget(queue_group)
@@ -121,7 +131,9 @@ class SetupDialog(QDialog):
         watch_layout.addWidget(QLabel("every"))
         self.watch_interval_input = QSpinBox()
         self.watch_interval_input.setRange(5, 300)
-        self.watch_interval_input.setValue(int(self.cfg.get("watch_interval_seconds", 30)))
+        self.watch_interval_input.setValue(
+            _coerce_spinbox_value(self.cfg.get("watch_interval_seconds", 30), default=30, minimum=5, maximum=300)
+        )
         watch_layout.addWidget(self.watch_interval_input)
         watch_layout.addWidget(QLabel("seconds"))
         watch_layout.addStretch()

@@ -1,3 +1,4 @@
+import re
 import socket
 from urllib.parse import urlparse
 
@@ -43,6 +44,28 @@ def create_client(client_id: str, client_secret: str, redirect_uri: str) -> spot
         status_retries=0,
         backoff_factor=0.2,
     )
+
+
+def extract_retry_after_seconds(details: str) -> int | None:
+    return _retry_after_hint(details)
+
+
+def _retry_after_hint(details: str) -> int | None:
+    patterns = [
+        r"retry[- ]?after[^0-9]*(\d+)",
+        r"retry[- ]?after\s*[:=]\s*(\d+)",
+        r"\b(\d+)\s*s\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, details, flags=re.IGNORECASE)
+        if match:
+            try:
+                value = int(match.group(1))
+            except ValueError:
+                continue
+            if value > 0:
+                return value
+    return None
 
 
 def _best_image_url(images: list[dict] | None) -> str | None:
@@ -103,9 +126,11 @@ def _playlist_list_error(error: Exception) -> RuntimeError:
             "Please re-check your Client ID, Client Secret, and redirect URI, then sign in again."
         )
     if "429" in lowered or "too many requests" in lowered or "rate limit" in lowered:
+        retry_after = _retry_after_hint(details)
+        retry_text = f" Retry-After: {retry_after}s." if retry_after else ""
         return RuntimeError(
-            "Spotify is rate-limiting playlist loading (HTTP 429). "
-            "Please wait a few minutes and try again, or reopen the app later."
+            "Spotify is rate-limiting playlist loading (HTTP 429)."
+            f"{retry_text} Please wait a few minutes and try again, or reopen the app later."
         )
     if "403" in lowered or "forbidden" in lowered:
         return RuntimeError(
@@ -343,10 +368,13 @@ def get_liked_tracks(sp: spotipy.Spotify) -> list[dict]:
     tracks = []
     result = sp.current_user_saved_tracks(limit=50)
     while result:
-        for index, item in enumerate(result["items"], start=len(tracks)):
+        row_index = len(tracks)
+        for item in result["items"]:
             if not item or not item.get("track"):
+                row_index += 1
                 continue
             track = item["track"]
-            tracks.append(_build_track_entry(track, "liked", index))
+            tracks.append(_build_track_entry(track, "liked", row_index))
+            row_index += 1
         result = sp.next(result) if result.get("next") else None
     return tracks

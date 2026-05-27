@@ -250,6 +250,80 @@ class DownloaderTests(unittest.TestCase):
         download_ydl.download.assert_called_once_with(["https://www.youtube.com/watch?v=manual"])
         self.assertEqual(done, [("trk1", True, os.path.join(outdir, "Artist - Song.mp3"))])
 
+    def test_download_track_continues_after_search_error(self):
+        track = {"id": "trk1", "artist": "Artist", "name": "Song", "duration_ms": 180000}
+        done = []
+
+        search1_ctx = MagicMock()
+        search1_ydl = MagicMock()
+        search1_ydl.extract_info.side_effect = RuntimeError("timeout")
+        search1_ctx.__enter__.return_value = search1_ydl
+        search1_ctx.__exit__.return_value = False
+
+        search2_ctx = MagicMock()
+        search2_ydl = MagicMock()
+        search2_ydl.extract_info.return_value = {
+            "entries": [
+                {
+                    "webpage_url": "https://www.youtube.com/watch?v=good",
+                    "duration": 180,
+                    "availability": "public",
+                }
+            ]
+        }
+        search2_ctx.__enter__.return_value = search2_ydl
+        search2_ctx.__exit__.return_value = False
+
+        download_ctx = MagicMock()
+        download_ydl = MagicMock()
+        download_ctx.__enter__.return_value = download_ydl
+        download_ctx.__exit__.return_value = False
+
+        search_ctxs = [search1_ctx, search2_ctx]
+        download_ctxs = [download_ctx]
+
+        def yt_factory(*args, **kwargs):
+            opts = args[0] if args else kwargs
+            if isinstance(opts, dict) and opts.get("format"):
+                return download_ctxs.pop(0) if len(download_ctxs) > 1 else download_ctxs[0]
+            return search_ctxs.pop(0) if len(search_ctxs) > 1 else search_ctxs[0]
+
+        with tempfile.TemporaryDirectory() as outdir, \
+                patch("downloader.ensure_ffmpeg_available", return_value="/ffmpeg"), \
+                patch("downloader.threading.Thread", ImmediateThread), \
+                patch("downloader.yt_dlp.YoutubeDL", side_effect=yt_factory):
+            downloader.download_track(
+                track,
+                outdir,
+                on_progress=lambda status, pct: None,
+                on_done=lambda *args: done.append(args),
+            )
+
+        self.assertEqual(search1_ydl.extract_info.call_count, 1)
+        self.assertGreaterEqual(search2_ydl.extract_info.call_count, 1)
+        download_ydl.download.assert_called_once_with(["https://www.youtube.com/watch?v=good"])
+        self.assertEqual(done, [("trk1", True, os.path.join(outdir, "Artist - Song.mp3"))])
+
+    def test_find_existing_download_path_ignores_missing_known_paths(self):
+        track = {"id": "trk1", "artist": "Artist", "name": "Song", "duration_ms": 180000}
+        with tempfile.TemporaryDirectory() as outdir:
+            missing = os.path.join(outdir, "Artist - Song.mp3")
+            found = downloader.find_existing_download_path(track, outdir, known_paths=[missing])
+
+        self.assertIsNone(found)
+
+    def test_build_download_index_ignores_temporary_download_artifacts(self):
+        with tempfile.TemporaryDirectory() as outdir:
+            temp_dir = os.path.join(outdir, ".spotifyvdj_tmp", "trk1")
+            os.makedirs(temp_dir, exist_ok=True)
+            temp_file = os.path.join(temp_dir, "Artist - Song.mp3")
+            with open(temp_file, "wb") as f:
+                f.write(b"x")
+
+            index = downloader.build_download_index(outdir)
+
+        self.assertEqual(index, [])
+
 
 if __name__ == "__main__":
     unittest.main()

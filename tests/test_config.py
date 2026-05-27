@@ -26,6 +26,17 @@ class ConfigTests(unittest.TestCase):
                 data = json.load(f)
             self.assertEqual(data["max_concurrent_downloads"], 4)
 
+    def test_load_returns_defaults_for_non_object_json(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_file = f"{tmpdir}/config.json"
+            with open(cfg_file, "w", encoding="utf-8") as f:
+                json.dump([1, 2, 3], f)
+
+            with patch.object(config, "CONFIG_FILE", cfg_file):
+                loaded = config.load()
+
+        self.assertEqual(loaded, config.DEFAULTS)
+
 
 if __name__ == "__main__":
     unittest.main()

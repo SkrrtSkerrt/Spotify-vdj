@@ -14,6 +14,9 @@ class QueueEntry:
     name: str
     artist: str
     album: str = ""
+    playlist_id: str | None = None
+    track: dict | None = None
+    source_url: str | None = None
     status: str = "Queued"
     progress: float = 0.0
     cancel_fn: Callable | None = None
@@ -237,6 +240,22 @@ class QueuePanel(QWidget):
         # Insert before trailing stretch
         self._container_layout.insertWidget(self._container_layout.count() - 1, row)
         self._refresh_counts()
+
+    def snapshot_entries(self) -> list[dict]:
+        return [
+            {
+                "track_id": entry.track_id,
+                "playlist_id": entry.playlist_id,
+                "track": entry.track,
+                "source_url": entry.source_url,
+                "name": entry.name,
+                "artist": entry.artist,
+                "album": entry.album,
+                "status": entry.status,
+                "progress": entry.progress,
+            }
+            for entry in self._entries.values()
+        ]
 
     def update_progress(self, track_id: str, status: str, progress: float):
         row = self._rows.get(track_id)
