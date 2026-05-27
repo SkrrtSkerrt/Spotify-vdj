@@ -61,15 +61,6 @@ The build script now bundles the app icon and sets up a local build environment 
 
 Already-downloaded tracks show "Downloaded" in green — re-downloading is skipped automatically.
 
-## Building a Windows .exe
-
-On your Windows machine:
-```
-build_windows.bat
-```
-
-This creates `dist\SpotifyVDJ.exe` — a standalone app with no Python install required.
-
 ## Notes
 
 - Audio is downloaded at **320kbps MP3** from YouTube Music
