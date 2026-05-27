@@ -16,3 +16,5 @@ SpotifyVDJ-Windows.zip
 *.tmp
 *.bak
 backup/
+.spotify_vdj_config.json
+.spotify_token_cache
