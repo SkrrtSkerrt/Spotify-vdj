@@ -33,25 +33,6 @@ On first run, the Setup dialog will ask for your credentials and output folder.
 ### 5. Set up VDJ
 In Virtual DJ, go to **Settings → Folders** and add the output folder you chose. VDJ will automatically detect downloaded tracks.
 
-## Windows: best install path
-
-If you want the full GUI on Windows, the smoothest approach is:
-
-1. Install Python 3.10 or 3.11
-2. Install FFmpeg and add it to PATH
-3. Copy this project to the Windows machine
-4. Run `build_windows.bat` once to create the standalone app
-5. Use `dist\SpotifyVDJ.exe` as your launcher
-
-The build script now bundles the app icon and sets up a local build environment automatically.
-
-## Windows build notes
-
-- `build_windows.bat` builds a one-file GUI executable with PyInstaller
-- The app icon lives at `icon.ico`
-- The executable still needs FFmpeg available on the Windows machine unless you bundle FFmpeg separately, or place `ffmpeg.exe` next to the EXE
-- If you want true one-click installation, wrap `dist\SpotifyVDJ.exe` with an installer tool like Inno Setup or NSIS
-
 ## Usage
 
 1. Select a playlist from the left panel
